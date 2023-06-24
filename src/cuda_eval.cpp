@@ -51,6 +51,9 @@
 // Forward declarations
 static void jitc_cuda_render_stmt(uint32_t index, const Variable *v);
 static void jitc_cuda_render_var(uint32_t index, const Variable *v);
+static void jitc_cuda_render_scatter_atomic(const Variable *v, const Variable *ptr,
+                                     const Variable *value, const Variable *index,
+                                     const Variable *mask);
 static void jitc_cuda_render_scatter(const Variable *v, const Variable *ptr,
                                      const Variable *value, const Variable *index,
                                      const Variable *mask);
@@ -717,7 +720,13 @@ static void jitc_cuda_render_var(uint32_t index, const Variable *v) {
             break;
 
         case VarKind::Scatter:
+            // jitc_raise("Scatter CUDA");
             jitc_cuda_render_scatter(v, a0, a1, a2, a3);
+            break;
+
+        case VarKind::ScatterAtomic:
+            // jitc_raise("ScatterAtomic CUDA");
+            jitc_cuda_render_scatter_atomic(v, a0, a1, a2, a3);
             break;
 
         case VarKind::ScatterKahan:
@@ -776,6 +785,45 @@ static void jitc_cuda_render_var(uint32_t index, const Variable *v) {
             jitc_fail("jitc_cuda_render_var(): unhandled variable kind \"%s\"!",
                       var_kind_name[(uint32_t) v->kind]);
     }
+}
+
+static void jitc_cuda_render_scatter_atomic(const Variable *v,
+                                     const Variable *ptr,
+                                     const Variable *value,
+                                     const Variable *index,
+                                     const Variable *mask){
+    
+    
+    bool index_zero = index->is_literal() && index->literal == 0;
+    bool unmasked = mask->is_literal() && mask->literal == 1;
+    bool is_bool = value->type == (uint32_t) VarType::Bool;
+    
+    const char *op = reduce_op_name[v->literal];
+    const char *op_type = v->literal ? "atom" : "st";
+    
+    if (!unmasked)
+        fmt("    @!$v bra l_$u_done;\n", mask, v->reg_index);
+    
+    if (index_zero) {
+        fmt("    mov.u64 %rd3, $v;\n", ptr);
+    } else if (type_size[v->type] == 1) {
+        fmt("    cvt.u64.$t %rd3, $v;\n"
+            "    add.u64 %rd3, %rd3, $v;\n", index, index, ptr);
+    } else {
+        fmt("    mad.wide.$t %rd3, $v, $a, $v;\n",
+            index, index, value, ptr);
+    }
+
+    if (is_bool)
+        fmt("    selp.u16 %w0, 1, 0, $v;\n"
+                "    $s.global$s$s.u8 $v, [%rd3], %w0;\n",
+                value, op_type, v->literal ? "." : "", op, v);
+    else
+        fmt("    $s.global$s$s.$t $v, [%rd3], $v;\n", op_type,
+                v->literal ? "." : "", op, value, v, value);
+    
+    if (!unmasked)
+        fmt("\nl_$u_done:\n", v->reg_index);
 }
 
 static void jitc_cuda_render_scatter(const Variable *v,

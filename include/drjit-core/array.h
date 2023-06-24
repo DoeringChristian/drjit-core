@@ -408,6 +408,16 @@ void scatter_reduce(ReduceOp op, Array &target, const Array &value,
     target = Array::steal(jit_var_scatter(target.index(), value.index(),
                                           index.index(), mask.index(), op));
 }
+template <typename Array, typename Index>
+Array scatter_atomic(ReduceOp op, Array &target, const Array &value,
+                    const JitArray<Array::Backend, Index> &index,
+                    const JitArray<Array::Backend, bool> &mask = true) {
+    uint32_t target_ = target.index();
+    Array dst = Array::steal(jit_var_scatter_atomic(&target_, value.index(),
+                                          index.index(), mask.index(), op));
+    target = Array::steal(target_);
+    return dst;
+}
 
 template <typename Array, typename Index>
 void scatter_reduce_kahan(Array &target_1, Array &target_2, const Array &value,

@@ -85,6 +85,9 @@ static void jitc_llvm_render_var(uint32_t index, Variable *v);
 static void jitc_llvm_render_scatter(const Variable *v, const Variable *ptr,
                                      const Variable *value, const Variable *index,
                                      const Variable *mask);
+static void jitc_llvm_render_scatter_atomic(const Variable *v, const Variable *ptr,
+                                     const Variable *value, const Variable *index,
+                                     const Variable *mask);
 static void jitc_llvm_render_scatter_kahan(const Variable *v, uint32_t index);
 static void jitc_llvm_render_printf(uint32_t index, const Variable *v,
                                     const Variable *mask, const Variable *target);
@@ -772,6 +775,10 @@ static void jitc_llvm_render_var(uint32_t index, Variable *v) {
             jitc_llvm_render_scatter(v, a0, a1, a2, a3);
             break;
 
+        case VarKind::ScatterAtomic:
+            jitc_llvm_render_scatter_atomic(v, a0, a1, a2, a3);
+            break;
+
         case VarKind::ScatterKahan:
             jitc_llvm_render_scatter_kahan(v, index);
             break;
@@ -825,6 +832,15 @@ static void jitc_llvm_render_var(uint32_t index, Variable *v) {
             jitc_fail("jitc_llvm_render_var(): unhandled node kind \"%s\"!",
                       var_kind_name[(uint32_t) v->kind]);
     }
+}
+
+static void jitc_llvm_render_scatter_atomic(const Variable *v,
+                                     const Variable *ptr,
+                                     const Variable *value,
+                                     const Variable *index,
+                                     const Variable *mask) {
+    jitc_raise("Atomic Scattering is not yet implemented for LLVM Backend.");
+    // TODO: Implement atomic scattering for the LLVM Backend
 }
 
 static void jitc_llvm_render_scatter(const Variable *v,

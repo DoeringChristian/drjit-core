@@ -926,6 +926,10 @@ extern JIT_EXPORT uint32_t jit_var_scatter(uint32_t target, uint32_t value,
                                            uint32_t index, uint32_t mask,
                                            JIT_ENUM ReduceOp reduce_op);
 
+extern JIT_EXPORT uint32_t jit_var_scatter_atomic(uint32_t *target, uint32_t value,
+                                           uint32_t index, uint32_t mask,
+                                           JIT_ENUM ReduceOp reduce_op);
+
 /**
  * \brief Schedule a Kahan-compensated floating point atomic scatter-write
  *

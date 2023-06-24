@@ -1,5 +1,8 @@
 #include "test.h"
+#include <cstdio>
 #include <cstring>
+#include <exception>
+#include <string>
 
 TEST_BOTH(01_gather) {
     Int32 r = arange<Int32>(100) + 100;
@@ -130,6 +133,43 @@ TEST_BOTH(09_safety) {
 
         scatter(a, Float(0), UInt32(0));
         jit_assert(index != a.index());
+    }
+}
+
+TEST_BOTH(10_scatter_atomic) {
+    /* scatter 16 values */ {
+        Float target = zero<Float>(16);
+        UInt32 index(0, 1, 2, 0, 4, 5, 6, 7, 8, 9, 10, 2, 3, 0, 0);
+
+        Float result = scatter_atomic(ReduceOp::Add, target, Float(1), index);
+
+        // fprintf(stderr, "\n%s\n", result.str());
+        jit_assert(
+            strcmp(target.str(),
+                   "[4, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]") == 0);
+    }
+
+    /* scatter 17 values, tests LLVM masking */ {
+        Float target = zero<Float>(16);
+        UInt32 index(0, 1, 2, 0, 4, 5, 6, 7, 8, 9, 10, 10, 2, 3, 0, 0);
+
+        scatter_atomic(ReduceOp::Add, target, Float(1), index);
+
+        jit_assert(
+            strcmp(target.str(),
+                   "[4, 1, 2, 1, 1, 1, 1, 1, 1, 1, 2, 0, 0, 0, 0, 0]") == 0);
+    }
+
+    /* masked scatter */ {
+        Float target = zero<Float>(16);
+        UInt32 index(0, 1, 2, 0, 4, 5, 6, 7, 8, 9, 10, 10, 2, 3, 0, 0);
+        Mask mask = neq(index, 7);
+
+        scatter_atomic(ReduceOp::Add, target, Float(1), index, mask);
+
+        jit_assert(
+            strcmp(target.str(),
+                   "[4, 1, 2, 1, 1, 1, 1, 0, 1, 1, 2, 0, 0, 0, 0, 0]") == 0);
     }
 }
 

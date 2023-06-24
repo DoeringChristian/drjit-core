@@ -1647,6 +1647,68 @@ void jitc_var_scatter_reduce_kahan(uint32_t *target_1, uint32_t *target_2,
     jitc_var_mark_side_effect(result);
 }
 
+uint32_t jitc_var_scatter_atomic(uint32_t *target_, uint32_t value, uint32_t index, uint32_t mask, ReduceOp reduce_op){
+    Ref target = borrow(*target_), ptr;
+
+    auto print_log = [&](const char *reason, uint32_t result_node = 0) {
+        if (result_node)
+            jitc_log(Debug,
+                     "jit_var_scatter(r%u[r%u] <- r%u if r%u, via "
+                     "ptr r%u, reduce_op=%s): r%u (output=r%u, %s)",
+                     *target_, index, value, mask, (uint32_t) ptr,
+                     reduce_op_name[(int) reduce_op], result_node,
+                     (uint32_t) target, reason);
+        else
+            jitc_log(Debug,
+                     "jit_var_scatter(r%u[r%u] <- r%u if r%u, via "
+                     "ptr r%u, reduce_op=%s) (%s)",
+                     *target_, index, value, mask, (uint32_t) ptr,
+                     reduce_op_name[(int) reduce_op], reason);
+    };
+
+    auto [var_info, value_v, index_v, mask_v] =
+        jitc_var_check("jit_var_scatter", value, index, mask);
+
+    const Variable *target_v = jitc_var(target);
+
+    if (target_v->placeholder)
+        jitc_raise("jit_var_scatter(): cannot scatter to a placeholder variable!");
+
+    var_info.placeholder |= (bool) (jitc_flags() & (uint32_t) JitFlag::Recording);
+
+    if (target_v->type != value_v->type)
+        jitc_raise("jit_var_scatter(): target/value type mismatch!");
+
+    // Check if it is safe to write directly
+    if (target_v->ref_count > 2){ /// 1 from original array, 1 from borrow above
+        target = steal(jitc_var_copy(target));
+        jitc_raise("test");
+    }
+
+    ptr = steal(jitc_var_pointer(var_info.backend, jitc_var_ptr(target), target, 1));
+
+    Ref mask_2  = steal(jitc_var_mask_apply(mask, var_info.size)),
+        index_2 = steal(jitc_scatter_gather_index(target, index));
+
+    var_info.size = std::max(var_info.size, jitc_var(mask_2)->size);
+
+    uint32_t result = jitc_var_new_node_4(
+        var_info.backend, VarKind::ScatterAtomic, (VarType) target_v->type,
+        var_info.size, var_info.placeholder, ptr,
+        jitc_var(ptr), value, jitc_var(value), index_2, jitc_var(index_2),
+        mask_2, jitc_var(mask_2), (uint64_t) reduce_op);
+
+    print_log(((uint32_t) target == *target_) ? "direct" : "copy", result);
+    
+    jitc_var_inc_ref(result); // Increase reference count for result
+
+    jitc_var_mark_side_effect(result);
+    
+    *target_ = target.release();
+    
+    return result;
+}
+
 uint32_t jitc_var_scatter(uint32_t target_, uint32_t value, uint32_t index,
                           uint32_t mask, ReduceOp reduce_op) {
     Ref target = borrow(target_), ptr;

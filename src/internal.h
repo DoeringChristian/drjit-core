@@ -88,7 +88,7 @@ enum VarKind : uint32_t {
     Cast, Bitcast,
 
     // Memory-related operations
-    Gather, Scatter, ScatterKahan,
+    Gather, Scatter, ScatterKahan, ScatterAtomic,
 
     // Specialized nodes for vcalls
     VCallMask, VCallSelf,
