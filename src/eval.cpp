@@ -517,8 +517,7 @@ Task *jitc_run(ThreadState *ts, ScheduledGroup group) {
     }
 
     Task* ret_task = nullptr;
-    ret_task = ts->launch(kernel, group.size, &kernel_params,
-                          kernel_param_count, kernel_params_global);
+    ret_task = ts->launch(kernel, group);
 
     if (unlikely(jit_flag(JitFlag::KernelHistory))) {
         if (ts->backend == JitBackend::CUDA) {

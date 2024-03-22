@@ -1,11 +1,15 @@
 #include "cuda_ts.h"
+#include "common.h"
+#include "drjit-core/jit.h"
+#include "util.h"
 #include "var.h"
 #include "log.h"
 #include "optix.h"
 #include "eval.h"
 
-const static char *reduction_name[(int) ReduceOp::Count] = { "none", "sum", "mul",
-                                                      "min", "max", "and", "or" };
+static std::vector<void *> kernel_params;
+static uint8_t *kernel_params_global = nullptr;
+static uint32_t kernel_param_count = 0;
 
 static void submit_gpu(KernelType type, CUfunction kernel, uint32_t block_count,
                        uint32_t thread_count, uint32_t shared_mem_bytes,
@@ -40,22 +44,63 @@ static void submit_gpu(KernelType type, CUfunction kernel, uint32_t block_count,
     }
 }
 
-Task *CUDAThreadState::launch(Kernel kernel, uint32_t size,
-                              std::vector<void *> *kernel_params,
-                              uint32_t kernel_param_count,
-                              const uint8_t *kernel_params_global) {
+Task *CUDAThreadState::launch(Kernel kernel, ScheduledGroup group) {
+
+    // Get the kernel parameters from the group
+
+    kernel_params.clear();
+    
+    // Add size as the first parameter
+    {
+        uintptr_t size = 0;
+        memcpy(&size, &group.size, sizeof(uint32_t));
+        kernel_params.push_back((void *) size);
+    }
+
+    // Collect data from variables into kernel_params
+    // TODO: in `eval.cpp` we still have to calculate the kernel param size
+    for (uint32_t group_index = group.start; group_index < group.end; ++group_index){
+        ScheduledVariable &sv = schedule[group_index];
+        uint32_t index = sv.index;
+        Variable *v = jitc_var(index);
+        
+        if(v->is_evaluated()){
+            kernel_params.push_back(v->data);
+        }else if(v->output_flag && v->size == group.size){
+            kernel_params.push_back(sv.data);
+        }else if(v->is_literal() && (VarType) v->type == VarType::Pointer){
+            kernel_params.push_back((void *) v->literal);
+        }
+    }
+
+    kernel_param_count = (uint32_t) kernel_params.size();
+
+    // Pass parameters through global memory if too large or using OptiX
+    if(uses_optix || kernel_param_count > DRJIT_CUDA_ARG_LIMIT){
+        size_t size = kernel_param_count * sizeof(void *);
+        uint8_t *tmp = (uint8_t *) jitc_malloc(AllocType::HostPinned, size);
+        kernel_params_global = (uint8_t *) jitc_malloc(AllocType::Device, size);
+        memcpy(tmp, kernel_params.data(), size);
+        jitc_memcpy_async(backend, kernel_params_global, tmp, size);
+        jitc_free(tmp);
+        kernel_params.clear();
+        kernel_params.push_back(kernel_params_global);
+    }
+    
+
+    // Launch the kernel 
 #if defined(DRJIT_ENABLE_OPTIX)
     if (unlikely(uses_optix))
-        jitc_optix_launch(this, kernel, size, kernel_params_global,
+        jitc_optix_launch(this, kernel, group.size, kernel_params_global,
                           kernel_param_count);
 #endif
 
     if (!uses_optix) {
-        size_t buffer_size = kernel_params->size() * sizeof(void *);
+        size_t buffer_size = kernel_params.size() * sizeof(void *);
 
         void *config[] = {
             CU_LAUNCH_PARAM_BUFFER_POINTER,
-            kernel_params->data(),
+            kernel_params.data(),
             CU_LAUNCH_PARAM_BUFFER_SIZE,
             &buffer_size,
             CU_LAUNCH_PARAM_END
@@ -63,7 +108,7 @@ Task *CUDAThreadState::launch(Kernel kernel, uint32_t size,
 
         uint32_t block_count, thread_count;
         const Device &device = state.devices[this->device];
-        device.get_launch_config(&block_count, &thread_count, size,
+        device.get_launch_config(&block_count, &thread_count, group.size,
                                  (uint32_t) kernel.cuda.block_size);
 
         cuda_check(cuLaunchKernel(kernel.cuda.func, block_count, 1, 1,

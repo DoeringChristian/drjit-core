@@ -1,12 +1,13 @@
 #include "llvm_ts.h"
 #include "log.h"
+#include "util.h"
 #include "var.h"
 #include "common.h"
 #include "profile.h"
 #include "eval.h"
 
-const static char *reduction_name[(int) ReduceOp::Count] = { "none", "sum", "mul",
-                                                             "min",  "max", "and", "or" };
+static std::vector<void *> kernel_params;
+static uint32_t kernel_param_count = 0;
 
 using Reduction = void (*) (const void *ptr, uint32_t start, uint32_t end, void *out);
 
@@ -135,15 +136,40 @@ static void submit_cpu(KernelType type, Func &&func, uint32_t width,
     jitc_task = new_task;
 }
 
-Task *LLVMThreadState::launch(Kernel kernel, uint32_t size,
-                              std::vector<void *> *kernel_params,
-                              uint32_t kernel_param_count,
-                              const uint8_t *kernel_params_global) {
+Task *LLVMThreadState::launch(Kernel kernel, ScheduledGroup group) {
+    
+    // Get the kernel parameters from the group
+
+    kernel_params.clear();
+    
+    // First 3 parameters reserved for: kernel ptr, size, ITT identifier
+    for (int i = 0; i < 3; ++i)
+        kernel_params.push_back(nullptr);
+
+    // Collect data from variables into kernel_params
+    // TODO: in `eval.cpp` we still have to calculate the kernel param size
+    for (uint32_t group_index = group.start; group_index < group.end; ++group_index){
+        ScheduledVariable &sv = schedule[group_index];
+        uint32_t index = sv.index;
+        Variable *v = jitc_var(index);
+        
+        if(v->is_evaluated()){
+            kernel_params.push_back(v->data);
+        }else if(v->output_flag && v->size == group.size){
+            kernel_params.push_back(sv.data);
+        }else if(v->is_literal() && (VarType) v->type == VarType::Pointer){
+            kernel_params.push_back((void *) v->literal);
+        }
+    }
+
+    kernel_param_count = (uint32_t) kernel_params.size();
+    
+    // Launch the kernel 
     Task *ret_task = nullptr;
     
     uint32_t packet_size = jitc_llvm_vector_width,
              desired_block_size = jitc_llvm_block_size,
-             packets = (size + packet_size - 1) / packet_size,
+             packets = (group.size + packet_size - 1) / packet_size,
              cores = pool_size();
 
     // We really don't know how much computation this kernel performs, and
@@ -166,16 +192,16 @@ Task *LLVMThreadState::launch(Kernel kernel, uint32_t size,
     uint32_t blocks, block_size;
     if (cores <= 1) {
         blocks = 1;
-        block_size = size;
+        block_size = group.size;
     } else if (packets <= cores) {
         blocks = packets;
         block_size = packet_size;
-    } else if (size <= desired_block_size * cores * 2) {
+    } else if (group.size <= desired_block_size * cores * 2) {
         blocks = cores;
         block_size = (packets + blocks - 1) / blocks * packet_size;
     } else {
         block_size = desired_block_size;
-        blocks = (size + block_size - 1) / block_size;
+        blocks = (group.size + block_size - 1) / block_size;
     }
 
     auto callback = [](uint32_t index, void *ptr) {
@@ -204,9 +230,9 @@ Task *LLVMThreadState::launch(Kernel kernel, uint32_t size,
 #endif
     };
 
-    (*kernel_params)[0] = (void *) kernel.llvm.reloc[0];
-    (*kernel_params)[1] = (void *) ((((uintptr_t) block_size) << 32) +
-                                 (uintptr_t) size);
+    kernel_params[0] = (void *) kernel.llvm.reloc[0];
+    kernel_params[1] = (void *) ((((uintptr_t) block_size) << 32) +
+                                 (uintptr_t) group.size);
 
 #if defined(DRJIT_ENABLE_ITTNOTIFY)
     kernel_params[2] = kernel.llvm.itt;
@@ -218,8 +244,8 @@ Task *LLVMThreadState::launch(Kernel kernel, uint32_t size,
 
     ret_task = task_submit_dep(
         nullptr, &jitc_task, 1, blocks,
-        callback, kernel_params->data(),
-        (uint32_t) (kernel_params->size() * sizeof(void *)),
+        callback, kernel_params.data(),
+        (uint32_t) (kernel_params.size() * sizeof(void *)),
         nullptr
     );
 
