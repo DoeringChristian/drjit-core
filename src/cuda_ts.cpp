@@ -122,6 +122,11 @@ Task *CUDAThreadState::launch(Kernel kernel, ScheduledGroup group) {
     if (unlikely(jit_flag(JitFlag::LaunchBlocking)))
         cuda_check(cuStreamSynchronize(this->stream));
 
+
+    // Cleanup global kernel params
+    jitc_free(kernel_params_global);
+    kernel_params_global = nullptr;
+
     return nullptr;
 }
 
