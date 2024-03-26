@@ -136,7 +136,8 @@ static void submit_cpu(KernelType type, Func &&func, uint32_t width,
     jitc_task = new_task;
 }
 
-Task *LLVMThreadState::launch(Kernel kernel, ScheduledGroup group) {
+Task *LLVMThreadState::launch(Kernel kernel, ScheduledVariable schedule[],
+                              ScheduledGroup group) {
     
     // Get the kernel parameters from the group
 

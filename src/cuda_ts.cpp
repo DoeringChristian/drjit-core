@@ -44,7 +44,8 @@ static void submit_gpu(KernelType type, CUfunction kernel, uint32_t block_count,
     }
 }
 
-Task *CUDAThreadState::launch(Kernel kernel, ScheduledGroup group) {
+Task *CUDAThreadState::launch(Kernel kernel, ScheduledVariable schedule[],
+                              ScheduledGroup group) {
 
     // Get the kernel parameters from the group
 

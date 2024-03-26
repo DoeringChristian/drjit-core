@@ -1,12 +1,23 @@
 #include "eval.h"
 #include "internal.h"
-#include "log.h"
 
-struct CUDAThreadState: ThreadState{
+enum class OpType{
+    Launch,
+};
+
+struct Op{
+    OpType type;
+    ScheduledGroup group;
+    Kernel kernel;
+};
+
+struct RecordedThreadState: ThreadState{
+
+    RecordedThreadState(ThreadState *intenal);
 
     Task *launch(Kernel kernel, ScheduledVariable schedule[],
                  ScheduledGroup group) override;
-
+    
     /// Fill a device memory region with constants of a given type
     void memset_async(void *ptr, uint32_t size, uint32_t isize,
                       const void *src) override;
@@ -51,11 +62,17 @@ struct CUDAThreadState: ThreadState{
     // Enqueue a function to be run on the host once backend computation is done
     void enqueue_host_func(void (*callback)(void *), void *payload) override;
 
-    /// LLVM: reduce a variable that was previously expanded due to dr.ReduceOp.Expand
-    void reduce_expanded(VarType, ReduceOp, void *, uint32_t,
-                         uint32_t) override {
-      jitc_raise("jitc_reduce_expanded(): unsupported by CUDAThreadState!");
-    }
+    /// LLVM: reduce a variable that was previously expanded due to
+    /// dr.ReduceOp.Expand
+    void reduce_expanded(VarType vt, ReduceOp op, void *data, uint32_t exp,
+                         uint32_t size) override;
 
-    ~CUDAThreadState(){}
+    ~RecordedThreadState(){}
+
+    void replay(ScheduledVariable vars[]);
+
+private:
+    ThreadState *internal;
+    uint32_t n_variables;
+    std::vector<Op> operations;
 };

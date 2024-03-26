@@ -495,6 +495,7 @@ struct WeakRef {
 
 // Forward declaration of ScheduledGroup;
 struct ScheduledGroup;
+struct ScheduledVariable;
 
 /// Represents a single stream of a parallel communication
 struct ThreadState {
@@ -585,7 +586,8 @@ struct ThreadState {
     ThreadState() = default;
     ThreadState(const ThreadState &other) = default;
 
-    virtual Task *launch(Kernel kernel, ScheduledGroup group) = 0;
+    virtual Task *launch(Kernel kernel, ScheduledVariable schedule[],
+                         ScheduledGroup group) = 0;
 
     /// Fill a device memory region with constants of a given type
     virtual void memset_async(void *ptr, uint32_t size, uint32_t isize,
