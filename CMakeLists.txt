@@ -120,6 +120,8 @@ add_library(
   src/cuda_scatter.cpp
   src/cuda_ts.h
   src/cuda_ts.cpp
+  src/recorded_ts.h
+  src/recorded_ts.cpp
 
   # OptiX backend
   ${DRJIT_OPTIX_FILES}
