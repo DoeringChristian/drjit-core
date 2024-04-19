@@ -8,6 +8,7 @@
 */
 
 #include "internal.h"
+#include "record_ts.h"
 #include "var.h"
 #include "eval.h"
 #include "log.h"
@@ -1420,4 +1421,27 @@ int jit_can_scatter_reduce(JitBackend backend, VarType vt, ReduceOp op) {
 uint32_t jit_var_tile(uint32_t index, uint32_t count) {
     lock_guard guard(state.lock);
     return jitc_var_tile(index, count);
+}
+
+void jit_record_start(JitBackend backend, const uint32_t *inputs,
+                      uint32_t n_inputs) {
+    lock_guard guard(state.lock);
+    return jitc_record_start(backend, inputs, n_inputs);
+}
+
+RecordThreadState *jit_record_stop(JitBackend backend, const uint32_t *outputs,
+                                   uint32_t n_outputs) {
+    lock_guard guard(state.lock);
+    return jitc_record_stop(backend, outputs, n_outputs);
+}
+
+void jit_record_replay(RecordThreadState *ts, const uint32_t *inputs,
+                       uint32_t *outputs) {
+    lock_guard guard(state.lock);
+    return ts->replay(inputs, outputs);
+}
+
+void jit_record_destroy(RecordThreadState *ts){
+    lock_guard guard(state.lock);
+    delete ts;
 }

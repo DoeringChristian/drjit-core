@@ -2306,7 +2306,21 @@ extern JIT_EXPORT size_t jit_llvm_expand_threshold() JIT_NOEXCEPT;
 /// Return the identity element of a particular type of reduction
 extern JIT_EXPORT uint64_t jit_reduce_identity(VarType vt, ReduceOp op);
 
-extern JIT_EXPORT void jitc_test_record(JitBackend backend);
+extern JIT_EXPORT void jit_record_start(JitBackend backend, 
+                                        const uint32_t *inputs, 
+                                        uint32_t n_inputs);
+
+struct RecordThreadState;
+
+extern JIT_EXPORT RecordThreadState *jit_record_stop(JitBackend backend, 
+                                                     const uint32_t *outputs, 
+                                                     uint32_t n_outputs);
+
+extern JIT_EXPORT void jit_record_replay(RecordThreadState *ts,
+                                         const uint32_t *inputs,
+                                         uint32_t *outputs);
+
+extern JIT_EXPORT void jit_record_destroy(RecordThreadState * ts);
 
 #if defined(__cplusplus)
 }
