@@ -53,8 +53,9 @@ struct VisitedKeyHash {
 /// Auxiliary data structure needed to compute 'schedule' and 'schedule_groups'
 static tsl::robin_set<VisitedKey, VisitedKeyHash> visited;
 
-/// Kernel parameter buffer and device copy
+/// Kernel parameter buffer and variable ids
 static std::vector<void *> kernel_params;
+static std::vector<uint32_t> kernel_param_ids;
 
 /// Ensure uniqueness of globals/callables arrays
 GlobalsMap globals_map;
@@ -208,6 +209,7 @@ void jitc_assemble(ThreadState *ts, ScheduledGroup group) {
     JitBackend backend = ts->backend;
 
     kernel_params.clear();
+    kernel_param_ids.clear();
     globals.clear();
     globals_map.clear();
     alloca_size = alloca_align = -1;
@@ -265,6 +267,7 @@ void jitc_assemble(ThreadState *ts, ScheduledGroup group) {
             n_params_in++;
             v->param_type = ParamType::Input;
             kernel_params.push_back(v->data);
+            kernel_param_ids.push_back(index);
         } else if (v->output_flag && v->size == group.size) {
             n_params_out++;
             v->param_type = ParamType::Output;
@@ -282,10 +285,12 @@ void jitc_assemble(ThreadState *ts, ScheduledGroup group) {
                 dsize); // Note: unsafe to access 'v' after jitc_malloc().
 
             kernel_params.push_back(sv.data);
+            kernel_param_ids.push_back(index);
         } else if (v->is_literal() && (VarType) v->type == VarType::Pointer) {
             n_params_in++;
             v->param_type = ParamType::Input;
             kernel_params.push_back((void *) v->literal);
+            kernel_param_ids.push_back(index);
         } else {
             n_side_effects += (uint32_t) v->side_effect;
             v->param_type = ParamType::Register;
@@ -520,7 +525,7 @@ Task *jitc_run(ThreadState *ts, ScheduledGroup group) {
     }
 
     Task* ret_task = nullptr;
-    ret_task = ts->launch(kernel, group.size, &kernel_params);
+    ret_task = ts->launch(kernel, group.size, &kernel_params, &kernel_param_ids);
 
     if (unlikely(jit_flag(JitFlag::KernelHistory))) {
         if (ts->backend == JitBackend::CUDA) {
@@ -665,6 +670,7 @@ void jitc_eval_impl(ThreadState *ts) {
         scheduled_tasks.push_back(jitc_run(ts, group));
     }
 
+    ts->barrier();
     if (ts->backend == JitBackend::LLVM) {
         if (scheduled_tasks.size() == 1) {
             task_release(jitc_task);
