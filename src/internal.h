@@ -652,6 +652,8 @@ struct ThreadState {
     ThreadState() = default;
     ThreadState(const ThreadState &other) = default;
 
+    virtual void *malloc(AllocType type, size_t size) = 0;
+
     /// Inserts a barrier task
     virtual void barrier() = 0;
 

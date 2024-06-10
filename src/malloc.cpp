@@ -105,7 +105,14 @@ static void aligned_free(void *ptr, size_t size) {
 #endif
 }
 
-void* jitc_malloc(AllocType type, size_t size) {
+void *jitc_malloc(AllocType type, size_t size){
+    JitBackend backend =
+        (type == AllocType::Device || type == AllocType::HostPinned)
+            ? JitBackend::CUDA
+            : JitBackend::LLVM;
+    return thread_state(backend)->malloc(type, size);
+}
+void* jitc_malloc_impl(AllocType type, size_t size) {
     if (size == 0)
         return nullptr;
 

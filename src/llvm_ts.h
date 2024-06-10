@@ -2,6 +2,10 @@
 
 struct LLVMThreadState: ThreadState{
 
+    void *malloc(AllocType type, size_t size) override{
+        return jitc_malloc_impl(type, size);
+    }
+
     void barrier() override;
 
     Task *launch(Kernel kernel, uint32_t size,

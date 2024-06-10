@@ -3,6 +3,7 @@
 #include "drjit-core/jit.h"
 #include "internal.h"
 #include "log.h"
+#include "nanothread/nanothread.h"
 #include "var.h"
 
 // This struct holds the data and tracks the size of varaibles,
@@ -47,9 +48,10 @@ struct ReplayVariable {
 
             data = jitc_malloc(alloc_type, dsize);
         } else {
-            jitc_fail("replay(): Tried to allocate replay variable twice! "
-                      "Usually, only output variables are allocated. This "
-                      "indicates that something went wrong when recording.");
+            jitc_log(LogLevel::Warn,
+                     "replay(): Tried to allocate replay variable twice! "
+                     "Usually, only output variables are allocated. This "
+                     "indicates that something went wrong when recording.");
         }
     }
 };
@@ -63,14 +65,7 @@ static std::vector<ReplayVariable> replay_variables;
 void Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
     // Perform validation
-    for (uint32_t i = 0; i < this->record_variables.size(); ++i) {
-        RecordVariable &rv = this->record_variables[i];
-        jitc_assert(rv.type != VarType::Void && rv.size > 0,
-                    "Recorded Variable at slot(%u) was added, it's type is "
-                    "unknown! This can occur, if a variable is only used by "
-                    "operations, that do not provide a type.",
-                    i);
-    }
+    this->validate();
 
     ThreadState *ts = thread_state(backend);
     jitc_assert(dynamic_cast<RecordThreadState *>(ts) == nullptr,
@@ -129,9 +124,10 @@ void Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 ReplayVariable &rv = replay_variables[info.index];
 
                 if (info.type == ParamType::Input) {
-                    jitc_assert(
-                        rv.data != nullptr,
-                        "replay(): Kernel input variable not allocated!");
+                    jitc_assert(rv.data != nullptr,
+                                "replay(): Kernel input variable (param %u, "
+                                "slot %u) not allocated!",
+                                j, info.index);
 
                     if (!info.pointer_access)
                         input_size = std::max(input_size, rv.size);
@@ -229,8 +225,8 @@ void Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
             VarType type = replay_variables[ptr_info.index].type;
             ptr_var.alloc(backend);
 
-            jitc_log(LogLevel::Debug, "replay(): MemsetAsync -> slot(%u)",
-                     ptr_info.index);
+            jitc_log(LogLevel::Debug, "replay(): MemsetAsync 0x%lx -> slot(%u)",
+                     op.data, ptr_info.index);
 
             ts->memset_async(ptr_var.data, ptr_var.size,
                              type_size[(uint32_t)type], &op.data);
@@ -257,6 +253,26 @@ void Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
             ts->reduce(type, rtype, ptr_var.data, ptr_var.size, out_var.data);
         } break;
+        case OpType::ReduceExpand: {
+            jitc_log(LogLevel::Debug, "replay(): ReduceExpand");
+
+            uint32_t dependency_index = op.dependency_range.first;
+            ParamInfo data_info = this->dependencies[dependency_index];
+
+            ReplayVariable &data_var = replay_variables[data_info.index];
+
+            VarType vt = data_var.type;
+            ReduceOp rop = op.rtype;
+            uint32_t size = data_var.size;
+            uint32_t tsize = type_size[(uint32_t)vt];
+            uint32_t workers = pool_size() + 1;
+
+            uint32_t replication_per_worker = size == 1u ? (64u / tsize) : 1u;
+
+            ts->reduce_expanded(vt, rop, data_var.data,
+                                replication_per_worker * workers, size);
+
+        } break;
         case OpType::PrefixSum: {
             uint32_t dependency_index = op.dependency_range.first;
 
@@ -281,12 +297,12 @@ void Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
             ReplayVariable &src_var = replay_variables[src_info.index];
             ReplayVariable &dst_var = replay_variables[dst_info.index];
 
-            jitc_log(LogLevel::Debug,
-                     "replay(): MemcpyAsync slot(%u) <- slot(%u)",
-                     dst_info.index, src_info.index);
-
             dst_var.size = src_var.size;
             dst_var.alloc(backend);
+
+            jitc_log(LogLevel::Debug,
+                     "replay(): MemcpyAsync slot(%u) <- slot(%u) [%u]",
+                     dst_info.index, src_info.index, dst_var.size);
 
             jitc_log(LogLevel::Debug, "    src.data=%p", src_var.data);
             jitc_log(LogLevel::Debug, "    dst.data=%p", dst_var.data);
@@ -479,6 +495,18 @@ void Recording::compute_rc() {
     }
 }
 
+void Recording::validate() {
+    for (uint32_t i = 0; i < this->record_variables.size(); ++i) {
+        RecordVariable &rv = this->record_variables[i];
+        jitc_assert((rv.type != VarType::Void && rv.size > 0) || rv.rc == 0 ||
+                        rv.rv_type == RecordType::Allocated,
+                    "Recorded Variable at slot(%u) was added, it's type is "
+                    "unknown! This can occur, if a variable is only used by "
+                    "operations, that do not provide a type.",
+                    i);
+    }
+}
+
 void jitc_record_start(JitBackend backend, const uint32_t *inputs,
                        uint32_t n_inputs) {
 
@@ -523,6 +551,7 @@ Recording *jitc_record_stop(JitBackend backend, const uint32_t *outputs,
         }
         Recording *recording = new Recording(rts->recording);
         recording->compute_rc();
+        recording->validate();
         delete rts;
         return recording;
     } else {
