@@ -25,6 +25,9 @@ struct ReplayVariable {
         this->rv_type = rv.rv_type;
 
         if (rv_type == RecordType::Captured) {
+            // copy the variable, so that it isn't changed
+            this->index = jitc_var_copy(this->index);
+            
             Variable *v = jitc_var(this->index);
             this->data = v->data;
             this->alloc_size = v->size * type_size[v->type];
@@ -251,8 +254,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                     if(rv.rv_type == RecordType::Captured){
                         jitc_log(LogLevel::Debug, "    label=%s",
                                  jitc_var_label(rv.index));
-                        jitc_log(LogLevel::Debug, "    data=%s",
-                                 jitc_var_str(rv.index));
+                        // jitc_log(LogLevel::Debug, "    data=%s",
+                        //          jitc_var_str(rv.index));
                     }
                 } else {
                     jitc_log(LogLevel::Info,

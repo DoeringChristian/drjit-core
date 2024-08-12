@@ -293,10 +293,7 @@ struct RecordThreadState : ThreadState {
                 if (param_type == ParamType::Input){
                     // Determine if this variable is a call offset buffer
                     // then use the captured variable.
-                    auto it = call_offsets.find(ptr);
-                    if(it != call_offsets.end()){
-                        slot = it.value();
-                    }else if(has_variable(ptr)) {
+                    if(has_variable(ptr)) {
                         slot = this->get_variable(ptr);
                     }else{
                         slot = capture_variable(index);
@@ -581,19 +578,12 @@ struct RecordThreadState : ThreadState {
 
     /// Perform an assynchronous copy operation
     void memcpy_async(void *dst, const void *src, size_t size) override {
-        if (!paused) {
+        if (!paused && has_variable(src)) {
             jitc_log(LogLevel::Debug,
                      "record(): memcpy_async(dst=%p, src=%p, size=%zu)", dst,
                      src, size);
 
-            uint32_t src_id;
-            // NOTE: We allow capturing of source variables for memeset_async.
-            // The reason is that they might be coming from the host
-            // (differentiable rendering).
-            if (!has_variable(src))
-                src_id = this->capture_data(src, size);
-            else
-                src_id = this->get_variable(src);
+            uint32_t src_id = this->get_variable(src);
 
             RecordVariable rv;
             rv.last_memcpy  = this->recording.operations.size();
@@ -867,8 +857,8 @@ struct RecordThreadState : ThreadState {
 
         uint32_t slot = this->recording.record_variables.size();
         jitc_log(LogLevel::Debug,
-                 "record(): capturing offset buffer at slot s%u", slot);
-        jitc_log(LogLevel::Debug, "    data=%s", jitc_var_str(data_buf));
+                 "record(): capturing data at slot s%u at %p [%zu]", slot, ptr,
+                 size);
 
         RecordVariable rv;
         rv.rv_type = RecordType::Captured;
@@ -916,9 +906,6 @@ struct RecordThreadState : ThreadState {
     uint32_t capture_variable(uint32_t index, void *ptr = nullptr,
                               bool copy = true, bool clear = false) {
 
-        (void) ptr;
-        (void) copy;
-        (void) clear;
         scoped_pause();
         Variable *v = jitc_var(index);
         if (v->scope < this->internal->scope) {
@@ -928,12 +915,28 @@ struct RecordThreadState : ThreadState {
                        index, v->size, v->data, jitc_var_label(index));
         }
 
-        // NOTE: for now we don't support capturing variables at all.
-        // Therefore we raise an exception
-        jitc_raise(
-            "record(): Variable r%u[%u], label = %s was created while recording a kernel. "
-            "Only literal variables can be uploaded by the kernel.",
-            index, v->size, jitc_var_label(index));
+        // Have to copy the variable, so that it cannot be modified by other
+        // calls later.
+        uint32_t slot = this->recording.record_variables.size();
+        jitc_log(LogLevel::Debug,
+                 "record(): capturing variable r%u, type=%s at slot s%u", index, type_name[(uint32_t)v->type], slot);
+
+        if (!ptr)
+            ptr = v->data;
+
+        if (copy) {
+            index = jitc_var_copy(index);
+            v = jitc_var(index);
+        }
+
+        RecordVariable rv;
+        rv.rv_type = RecordType::Captured;
+        rv.index = index;
+        jitc_var_inc_ref(index);
+
+        this->recording.record_variables.push_back(rv);
+
+        return slot;
 
     }
 
