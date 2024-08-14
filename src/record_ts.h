@@ -904,10 +904,9 @@ struct RecordThreadState : ThreadState {
     /**
      * This function tries to capture a variable that is not known to the
      * recording threadstate.
-     * Currently capturing variables is unsupported and this function will just fail.
      */
     uint32_t capture_variable(uint32_t index, void *ptr = nullptr,
-                              bool copy = true, bool clear = false) {
+                              bool remember = true) {
 
         scoped_pause();
         Variable *v = jitc_var(index);
@@ -919,8 +918,10 @@ struct RecordThreadState : ThreadState {
                 index, v->size, v->data, jitc_var_label(index));
         }
 
+        // Might make sense to limit the size of captured variables to 1.
         // if (v->size > 1)
-        //     jitc_raise("record(): Variable r%u[%u] -> %p, label=%s, data=%s, "
+        //     jitc_raise("record(): Variable r%u[%u] -> %p, label=%s, data=%s,
+        //     "
         //                "of size > 1 was created while recording.",
         //                index, v->size, v->data, jitc_var_label(index),
         //                jitc_var_str(index));
@@ -950,11 +951,16 @@ struct RecordThreadState : ThreadState {
         rv.index   = data_var;
         this->recording.record_variables.push_back(rv);
 
-        auto it = this->ptr_to_slot.find(ptr);
-        if (it == this->ptr_to_slot.end())
-            this->ptr_to_slot.insert({ ptr, slot });
-        else
-            it.value() = slot;
+        // Add the frozen value to the ptr_to_slot map
+        // NOTE: this only works if we are using notify_free.
+        // But it could allow us to capture call offsets here.
+        if(remember){
+            auto it = this->ptr_to_slot.find(ptr);
+            if (it == this->ptr_to_slot.end())
+                this->ptr_to_slot.insert({ ptr, slot });
+            else
+                it.value() = slot;
+        }
 
         return slot;
     }
