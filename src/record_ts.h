@@ -293,7 +293,10 @@ struct RecordThreadState : ThreadState {
                 if (param_type == ParamType::Input){
                     // Determine if this variable is a call offset buffer
                     // then use the captured variable.
-                    if(has_variable(ptr)) {
+                    auto it = call_offsets.find(ptr);
+                    if(it != call_offsets.end()){
+                        slot = it.value();
+                    }else if(has_variable(ptr)) {
                         slot = this->get_variable(ptr);
                     }else{
                         slot = capture_variable(index);
@@ -778,8 +781,8 @@ struct RecordThreadState : ThreadState {
         rv.type = (VarType)v->type;
         uint32_t slot = this->add_variable(v->data, rv);
         jitc_log(LogLevel::Info,
-                 "record(): Adding variable %u input %u to slot %u", input,
-                 input_index, slot);
+                 "record(): Adding variable %u <%p> input %u to slot s%u", input,
+                 v->data, input_index, slot);
         this->recording.inputs.push_back(slot);
     }
     void add_output(uint32_t output) {
@@ -796,7 +799,7 @@ struct RecordThreadState : ThreadState {
         }
 
         jitc_log(LogLevel::Trace,
-                 "record(): Adding variable %u output %u to slot %u", output,
+                 "record(): Adding variable %u output %u to slot s%u", output,
                  output_index, slot);
         ParamInfo info;
         info.slot = slot;
@@ -909,35 +912,51 @@ struct RecordThreadState : ThreadState {
         scoped_pause();
         Variable *v = jitc_var(index);
         if (v->scope < this->internal->scope) {
-            jitc_raise("record(): Variable %u[%u] -> %p, label=%s, was created "
-                       "before recording was started, but it was "
-                       "not speciefied as an input variable!",
-                       index, v->size, v->data, jitc_var_label(index));
+            jitc_raise(
+                "record(): Variable r%u[%u] -> %p, label=%s, was created "
+                "before recording was started, but it was "
+                "not speciefied as an input variable!",
+                index, v->size, v->data, jitc_var_label(index));
         }
+
+        // if (v->size > 1)
+        //     jitc_raise("record(): Variable r%u[%u] -> %p, label=%s, data=%s, "
+        //                "of size > 1 was created while recording.",
+        //                index, v->size, v->data, jitc_var_label(index),
+        //                jitc_var_str(index));
+
+        if (!ptr)
+            ptr = v->data;
 
         // Have to copy the variable, so that it cannot be modified by other
         // calls later.
         uint32_t slot = this->recording.record_variables.size();
         jitc_log(LogLevel::Debug,
-                 "record(): capturing variable r%u, type=%s at slot s%u", index, type_name[(uint32_t)v->type], slot);
+                 "record(): capturing variable r%u, type=%s at slot s%u", index,
+                 type_name[(uint32_t) v->type], slot);
 
-        if (!ptr)
-            ptr = v->data;
+        AllocType atype = backend == JitBackend::CUDA ? AllocType::Device
+                                                      : AllocType::HostAsync;
+        size_t dsize    = v->size * type_size[(uint32_t) v->type];
 
-        if (copy) {
-            index = jitc_var_copy(index);
-            v = jitc_var(index);
-        }
+        uint64_t *data = (uint64_t *) jitc_malloc(atype, dsize);
+        jitc_memcpy(backend, data, ptr, dsize);
+
+        uint32_t data_var = jitc_var_mem_map(backend, (VarType) v->type, data,
+                                             (size_t) v->size, 1);
 
         RecordVariable rv;
         rv.rv_type = RecordType::Captured;
-        rv.index = index;
-        jitc_var_inc_ref(index);
-
+        rv.index   = data_var;
         this->recording.record_variables.push_back(rv);
 
-        return slot;
+        auto it = this->ptr_to_slot.find(ptr);
+        if (it == this->ptr_to_slot.end())
+            this->ptr_to_slot.insert({ ptr, slot });
+        else
+            it.value() = slot;
 
+        return slot;
     }
 
     /**
