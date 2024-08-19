@@ -213,30 +213,49 @@ struct RecordThreadState : ThreadState {
                     uint32_t dst_slot = get_variable(v->data);
                     const RecordVariable &rv =
                         this->recording.record_variables[dst_slot];
+                    if (rv.last_memset == 0)
+                        jitc_fail("record(): Could not infer last memset operation of r%u s%u, "
+                                  "to construct expand operation!", index, dst_slot);
                     Operation &memset =
-                        this->recording.operations[rv.last_memset];
-                    Operation &memcpy =
-                        this->recording.operations[rv.last_memcpy];
+                        this->recording.operations[rv.last_memset - 1];
                     memset.enabled = false;
-                    memcpy.enabled = false;
-
-                    uint32_t dependency_index = memcpy.dependency_range.first;
-                    ParamInfo src_info =
-                        this->recording.dependencies[dependency_index];
-
-                    uint32_t start = this->recording.dependencies.size();
-                    add_in_param(src_info.slot);
-                    add_out_param(dst_slot, v->type);
-                    uint32_t end = this->recording.dependencies.size();
-
-                    jitc_log(LogLevel::Debug,
-                             "record(): expand(dst=s%u, src=s%u)", dst_slot,
-                             src_info.slot);
+                    
                     Operation op;
+                    uint32_t start = this->recording.dependencies.size();
+                    add_out_param(dst_slot, v->type);
+                    if(rv.last_memcpy){
+                        Operation &memcpy =
+                            this->recording.operations[rv.last_memcpy - 1];
+                        memcpy.enabled = false;
+                        
+                        uint32_t dependency_index = memcpy.dependency_range.first;
+                        ParamInfo src_info =
+                            this->recording.dependencies[dependency_index];
+                        
+                        add_in_param(src_info.slot);
+                        
+                        jitc_log(LogLevel::Debug,
+                                 "record(): expand(dst=s%u, src=s%u)", dst_slot,
+                                 src_info.slot);
+
+                        op.size = memcpy.size / type_size[(uint32_t)src_info.type];
+                    }else{
+                        // Case where in jitc_var_expand, v->is_literal && v->literal == identity
+                        uint64_t identity = jitc_reduce_identity(
+                            (VarType) v->type, (ReduceOp) v->reduce_op);
+
+                        jitc_log(LogLevel::Debug,
+                                 "record(): expand(dst=s%u, src=literal 0x%lx)",
+                                 dst_slot, identity);
+
+                        op.size = v->size;
+
+                    }
+                    uint32_t end = this->recording.dependencies.size();
+                    
                     op.type = OpType::Expand;
                     op.dependency_range = std::pair(start, end);
                     op.data = memset.data;
-                    op.size = memcpy.size / type_size[(uint32_t)src_info.type];
                     this->recording.operations.push_back(op);
 
                     this->recording.requires_dry_run = true;
@@ -432,7 +451,7 @@ struct RecordThreadState : ThreadState {
                         isize);
 
             RecordVariable rv;
-            rv.last_memset = this->recording.operations.size();
+            rv.last_memset = this->recording.operations.size() + 1;
             uint32_t ptr_id = this->add_variable(ptr, rv);
 
             uint32_t start = this->recording.dependencies.size();
@@ -589,7 +608,7 @@ struct RecordThreadState : ThreadState {
             uint32_t src_id = this->get_variable(src);
 
             RecordVariable rv;
-            rv.last_memcpy  = this->recording.operations.size();
+            rv.last_memcpy  = this->recording.operations.size() + 1;
             uint32_t dst_id = this->add_variable(dst, rv);
 
             uint32_t start = this->recording.dependencies.size();
