@@ -80,8 +80,10 @@ struct RecordVariable {
             this->rv_type = rhs.rv_type;
             this->index = rhs.index;
         }
-        this->last_memcpy = rhs.last_memcpy;
-        this->last_memset = rhs.last_memset;
+        if(rhs.last_memcpy)
+            this->last_memcpy = rhs.last_memcpy;
+        if(rhs.last_memset)
+            this->last_memset = rhs.last_memset;
         return *this;
     }
 };
