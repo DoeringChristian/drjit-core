@@ -371,17 +371,32 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
             jitc_log(LogLevel::Debug, "replay(): expand");
 
             uint32_t dependency_index = op.dependency_range.first;
-
-            ParamInfo src_info = this->dependencies[dependency_index];
-            ParamInfo dst_info = this->dependencies[dependency_index + 1];
-
-            ReplayVariable &src_rv = replay_variables[src_info.slot];
+            bool memcpy = op.dependency_range.second == dependency_index + 2;
+                
+            ParamInfo dst_info = this->dependencies[dependency_index];
             ReplayVariable &dst_rv = replay_variables[dst_info.slot];
-
-            VarType vt = src_info.vtype;
-            uint32_t size = src_rv.size(vt);
+            VarType vt = dst_info.vtype;
             uint32_t tsize = type_size[(uint32_t)vt];
             uint32_t workers = pool_size() + 1;
+                
+            uint32_t size;
+            void *src_ptr = 0;
+            if (memcpy) {
+                ParamInfo src_info     = this->dependencies[dependency_index +1];
+                ReplayVariable &src_rv = replay_variables[src_info.slot];
+                size = src_rv.size(vt);
+                jitc_log(LogLevel::Debug,
+                         "jitc_memcpy_async(dst=%p, src=%p, size=%zu)", dst_rv.data,
+                         src_rv.data, (size_t)size * tsize);
+                    
+                src_ptr = src_rv.data;
+            } else {
+                // Case where in jitc_var_expand, v->is_literal && v->literal == identity
+                size = op.size;
+                jitc_log(LogLevel::Debug,
+                         "jitc_memcpy_async(dst=%p, src= literal 0x%lx, size=%zu)", dst_rv.data,
+                         op.data, (size_t)size * tsize);
+            }
 
             if (size != op.size)
                 return false;
@@ -392,14 +407,11 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
             dst_rv.alloc(backend, new_size, dst_info.vtype);
 
-            jitc_log(LogLevel::Debug, "    data=0x%lx", op.data);
             if (!dry_run)
                 ts->memset_async(dst_rv.data, new_size, tsize, &op.data);
-            jitc_log(LogLevel::Debug,
-                     "jitc_memcpy_async(dst=%p, src=%p, size=%zu)", dst_rv.data,
-                     src_rv.data, (size_t)size * tsize);
-            if (!dry_run)
-                ts->memcpy_async(dst_rv.data, src_rv.data,
+                
+            if (!dry_run && memcpy)
+                ts->memcpy_async(dst_rv.data, src_ptr,
                                  (size_t)size * tsize);
 
             dst_rv.data_size = size * type_size[(uint32_t)dst_info.vtype];
