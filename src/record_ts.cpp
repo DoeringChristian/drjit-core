@@ -597,7 +597,6 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                       "the replay functionality!");
             break;
         }
-        jitc_sync_thread(ts);
     }
 
     ts->optix_sbt = tmp_sbt;
