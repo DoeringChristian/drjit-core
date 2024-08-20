@@ -212,55 +212,7 @@ struct RecordThreadState : ThreadState {
                 }
 
                 if (param_type == ParamType::Input && v->reduce_op) {
-                    uint32_t dst_slot = get_variable(v->data);
-                    const RecordVariable &rv =
-                        this->recording.record_variables[dst_slot];
-                    if (rv.last_memset == 0)
-                        jitc_fail("record(): Could not infer last memset operation of r%u s%u, "
-                                  "to construct expand operation!", index, dst_slot);
-                    Operation &memset =
-                        this->recording.operations[rv.last_memset - 1];
-                    memset.enabled = false;
-                    
-                    Operation op;
-                    uint32_t start = this->recording.dependencies.size();
-                    add_out_param(dst_slot, v->type);
-                    if(rv.last_memcpy){
-                        Operation &memcpy =
-                            this->recording.operations[rv.last_memcpy - 1];
-                        memcpy.enabled = false;
-                        
-                        uint32_t dependency_index = memcpy.dependency_range.first;
-                        ParamInfo src_info =
-                            this->recording.dependencies[dependency_index];
-                        
-                        add_in_param(src_info.slot);
-                        
-                        jitc_log(LogLevel::Debug,
-                                 "record(): expand(dst=s%u, src=s%u)", dst_slot,
-                                 src_info.slot);
-
-                        op.size = memcpy.size / type_size[(uint32_t)src_info.type];
-                    }else{
-                        // Case where in jitc_var_expand, v->is_literal && v->literal == identity
-                        uint64_t identity = jitc_reduce_identity(
-                            (VarType) v->type, (ReduceOp) v->reduce_op);
-
-                        jitc_log(LogLevel::Debug,
-                                 "record(): expand(dst=s%u, src=literal 0x%lx)",
-                                 dst_slot, identity);
-
-                        op.size = v->size;
-
-                    }
-                    uint32_t end = this->recording.dependencies.size();
-                    
-                    op.type = OpType::Expand;
-                    op.dependency_range = std::pair(start, end);
-                    op.data = memset.data;
-                    this->recording.operations.push_back(op);
-
-                    this->recording.requires_dry_run = true;
+                    record_expand(index);
                 }
             }
 
@@ -864,6 +816,62 @@ struct RecordThreadState : ThreadState {
     // Mapping from data pointer of a variable to a index into the slot of the
     // recording.
     PtrToSlot ptr_to_slot;
+
+    /**
+     * Record the Expand operation, corresponding to the `jitc_var_expand` call,
+     * whith which the variable `index` has been expanded.
+     * This is called before a kernel is recorded.
+     */
+    void record_expand(uint32_t index) {
+        Variable *v              = jitc_var(index);
+        
+        uint32_t dst_slot        = get_variable(v->data);
+        const RecordVariable &rv = this->recording.record_variables[dst_slot];
+        if (rv.last_memset == 0)
+            jitc_fail(
+                "record(): Could not infer last memset operation of r%u s%u, "
+                "to construct expand operation!",
+                index, dst_slot);
+        Operation &memset = this->recording.operations[rv.last_memset - 1];
+        memset.enabled    = false;
+
+        Operation op;
+        uint32_t start = this->recording.dependencies.size();
+        add_out_param(dst_slot, v->type);
+        if (rv.last_memcpy) {
+            Operation &memcpy = this->recording.operations[rv.last_memcpy - 1];
+            memcpy.enabled    = false;
+
+            uint32_t dependency_index = memcpy.dependency_range.first;
+            ParamInfo src_info = this->recording.dependencies[dependency_index];
+
+            add_in_param(src_info.slot);
+
+            jitc_log(LogLevel::Debug, "record(): expand(dst=s%u, src=s%u)",
+                     dst_slot, src_info.slot);
+
+            op.size = memcpy.size / type_size[(uint32_t) src_info.type];
+        } else {
+            // Case where in jitc_var_expand, v->is_literal && v->literal ==
+            // identity
+            uint64_t identity = jitc_reduce_identity((VarType) v->type,
+                                                     (ReduceOp) v->reduce_op);
+
+            jitc_log(LogLevel::Debug,
+                     "record(): expand(dst=s%u, src=literal 0x%lx)", dst_slot,
+                     identity);
+
+            op.size = v->size;
+        }
+        uint32_t end = this->recording.dependencies.size();
+
+        op.type             = OpType::Expand;
+        op.dependency_range = std::pair(start, end);
+        op.data             = memset.data;
+        this->recording.operations.push_back(op);
+
+        this->recording.requires_dry_run = true;
+    }
 
     uint32_t capture_data(const void *ptr, size_t size){
         size_t dsize = size * type_size[(uint32_t)VarType::UInt8];
