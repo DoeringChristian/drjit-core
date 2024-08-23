@@ -5,6 +5,7 @@
 #include "internal.h"
 #include "log.h"
 #include "var.h"
+#include "profile.h"
 
 static bool dry_run = false;
 
@@ -118,6 +119,21 @@ static std::vector<void *> kernel_params;
 /// Temporary variables used for replaying a recording.
 static std::vector<ReplayVariable> replay_variables;
 
+static ProfilerRegion pr_operation("Replay Operation");
+static ProfilerRegion pr_kernel_launch("KernelLaunch");
+static ProfilerRegion pr_barrier("Barrier");
+static ProfilerRegion pr_memset_async("MemsetAsync");
+static ProfilerRegion pr_reduce("Reduce");
+static ProfilerRegion pr_reduce_expanded("ReduceExpanded");
+static ProfilerRegion pr_expand("Expand");
+static ProfilerRegion pr_prefix_sum("PrefixSum");
+static ProfilerRegion pr_compress("Compress");
+static ProfilerRegion pr_memcpy_async("MemcpyAsync");
+static ProfilerRegion pr_mkperm("Mkperm");
+static ProfilerRegion pr_aggregate("Aggregate");
+static ProfilerRegion pr_free("Free");
+static ProfilerRegion pr_output("Output");
+
 int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
     uint32_t n_kernels = 0;
@@ -151,11 +167,13 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
     for (uint32_t i = 0; i < this->operations.size(); ++i) {
         Operation &op = this->operations[i];
+        ProfilerPhase profiler(pr_operation);
         if (!op.enabled)
             continue;
 
         switch (op.type) {
         case OpType::KernelLaunch: {
+            ProfilerPhase profiler(pr_kernel_launch);
             jitc_log(LogLevel::Debug, "replay(): launching kernel %u ",
                      n_kernels++);
             kernel_params.clear();
@@ -299,11 +317,14 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
         }
 
         break;
-        case OpType::Barrier:
+        case OpType::Barrier:{
+            ProfilerPhase profiler(pr_barrier);
             if (!dry_run)
                 ts->barrier();
-            break;
+        } break;
         case OpType::MemsetAsync: {
+            ProfilerPhase profiler(pr_memset_async);
+
             uint32_t dependency_index = op.dependency_range.first;
 
             ParamInfo ptr_info = this->dependencies[dependency_index];
@@ -321,6 +342,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                                  &op.data);
         } break;
         case OpType::Reduce: {
+            ProfilerPhase profiler(pr_reduce);
+
             jitc_log(LogLevel::Debug, "replay(): Reduce");
             uint32_t dependency_index = op.dependency_range.first;
 
@@ -347,6 +370,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 
         } break;
         case OpType::ReduceExpanded: {
+            ProfilerPhase profiler(pr_reduce_expanded);
+
             jitc_log(LogLevel::Debug, "replay(): ReduceExpand");
 
             uint32_t dependency_index = op.dependency_range.first;
@@ -368,6 +393,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
         } break;
         case OpType::Expand: {
+            ProfilerPhase profiler(pr_expand);
+
             jitc_log(LogLevel::Debug, "replay(): expand");
 
             uint32_t dependency_index = op.dependency_range.first;
@@ -418,6 +445,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
             // dst_rv.size = size;
         } break;
         case OpType::PrefixSum: {
+            ProfilerPhase profiler(pr_prefix_sum);
+
             uint32_t dependency_index = op.dependency_range.first;
 
             ParamInfo in_info = this->dependencies[dependency_index];
@@ -435,6 +464,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                                out_var.data);
         } break;
         case OpType::Compress: {
+            ProfilerPhase profiler(pr_compress);
+
             uint32_t dependency_index = op.dependency_range.first;
 
             ParamInfo in_info = this->dependencies[dependency_index];
@@ -456,6 +487,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
             out_rv.data_size = out_size * type_size[(uint32_t)out_info.vtype];
         } break;
         case OpType::MemcpyAsync: {
+            ProfilerPhase profiler(pr_memset_async);
+
             uint32_t dependency_index = op.dependency_range.first;
             ParamInfo src_info = this->dependencies[dependency_index];
             ParamInfo dst_info = this->dependencies[dependency_index + 1];
@@ -478,6 +511,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 ts->memcpy_async(dst_var.data, src_var.data, src_var.data_size);
         } break;
         case OpType::Mkperm: {
+            ProfilerPhase profiler(pr_mkperm);
+
             jitc_log(LogLevel::Debug, "Mkperm:");
             uint32_t dependency_index = op.dependency_range.first;
             ParamInfo values_info = this->dependencies[dependency_index];
@@ -515,6 +550,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
         } break;
         case OpType::Aggregate: {
+            ProfilerPhase profiler(pr_aggregate);
+
             jitc_log(LogLevel::Debug, "replay(): Aggregate");
 
             uint32_t i = op.dependency_range.first;
@@ -585,6 +622,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
         } break;
         case OpType::Free: {
+            ProfilerPhase profiler(pr_free);
+
             uint32_t i         = op.dependency_range.first;
             ParamInfo info     = dependencies[i];
             ReplayVariable &rv = replay_variables[info.slot];
@@ -604,6 +643,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
     if (dry_run)
         return true;
 
+    ProfilerPhase profiler(pr_output);
     // Create output variables
     for (uint32_t i = 0; i < this->outputs.size(); ++i) {
         ParamInfo info = this->outputs[i];
