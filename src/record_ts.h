@@ -189,11 +189,20 @@ struct RecordThreadState : ThreadState {
             // the call_offsets map
             for (const uint32_t &index : *kernel_calls) {
                 Variable *v = jitc_var(index);
-                const CallData *call = (CallData *)v->data;
+                if((VarKind)v->kind != VarKind::Call)
+                    jitc_fail("Variable in kernel_calls is not a Call variable "
+                              "kind!");
+                
+                // Walk the dependencies of the call variable
+                uint32_t offset_v = v->dep[2];
+                v = jitc_var(offset_v);
+                uint32_t offset_buf = v->dep[3];
+                v = jitc_var(offset_buf);
+                
+                void *ptr = v->data;
 
-                uint32_t size = call->n_inst + 1;
-                uint32_t call_offset = capture_call_offsets(call->offset, size);
-                call_offsets.insert({call->offset, call_offset});
+                uint32_t call_offset = capture_variable(offset_buf, ptr, false, false);
+                call_offsets.insert({ptr, call_offset});
             }
 
             // Handle reduce_expanded case
@@ -935,11 +944,11 @@ struct RecordThreadState : ThreadState {
      * recording threadstate.
      */
     uint32_t capture_variable(uint32_t index, void *ptr = nullptr,
-                              bool remember = true) {
+                              bool remember = true, bool test_scope = true) {
 
         scoped_pause();
         Variable *v = jitc_var(index);
-        if (v->scope < this->internal->scope) {
+        if (v->scope < this->internal->scope && test_scope) {
             jitc_raise(
                 "record(): Variable r%u[%u] -> %p, label=%s, was created "
                 "before recording was started, but it was "
