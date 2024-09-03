@@ -56,6 +56,9 @@ extern void jitc_malloc_shutdown();
 /// Query the flavor of a memory allocation made using \ref jitc_malloc()
 extern AllocType jitc_malloc_type(void *ptr);
 
+/// Query the size of a memory allocation made using \ref jitc_malloc()
+extern size_t jitc_malloc_size(const void *ptr);
+
 /// Query the device associated with a memory allocation made using \ref jitc_malloc()
 extern int jitc_malloc_device(void *ptr);
 
