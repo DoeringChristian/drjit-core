@@ -481,6 +481,16 @@ AllocType jitc_malloc_type(void *ptr) {
     return type;
 }
 
+/// Query the size of a memory allocation made using \ref jitc_malloc()
+size_t jitc_malloc_size(const void *ptr){
+    auto it = state.alloc_used.find((uintptr_t) ptr);
+    if (unlikely(it == state.alloc_used.end()))
+        jitc_raise("jit_malloc_type(): unknown address " DRJIT_PTR "!", (uintptr_t) ptr);
+    auto [size, type, device] = alloc_info_decode(it->second);
+    (void) type; (void) device;
+    return size;
+}
+
 /// Query the device associated with a memory allocation made using \ref jitc_malloc()
 int jitc_malloc_device(void *ptr) {
     auto it = state.alloc_used.find((uintptr_t) ptr);
