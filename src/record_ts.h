@@ -4,6 +4,7 @@
 #include "eval.h"
 #include "internal.h"
 #include "log.h"
+#include "malloc.h"
 #include "util.h"
 #include "var.h"
 #include <algorithm>
@@ -659,14 +660,19 @@ struct RecordThreadState : ThreadState {
                     // Pointer or evaluated
 
                     bool has_var = has_variable(p.src);
-                    if (!has_var)
-                        jitc_fail(
-                            "record(): Tried to aggregate variable %p, that "
-                            "is not known to the recording!",
-                            p.src);
 
-                    RecordVariable rv;
-                    uint32_t slot = add_variable(p.src, rv);
+                    // NOTE: we have to capture the input to aggregate because
+                    // of nested vcalls.
+                    // The inner call's offset buffer is never passed to the
+                    // kernel only to the aggregate call.
+                    uint32_t slot;
+                    if(!has_var){
+                        slot = capture_data(p.src, 0);
+                        jitc_log(LogLevel::Debug, "    captured");
+                    }
+                    else
+                        slot = get_variable(p.src);
+                            
                     jitc_log(LogLevel::Debug, "    var at slot %u", slot);
 
                     ParamInfo info;
@@ -883,15 +889,18 @@ struct RecordThreadState : ThreadState {
     }
 
     uint32_t capture_data(const void *ptr, size_t size){
-        size_t dsize = size * type_size[(uint32_t)VarType::UInt8];
+        if (!size){
+            size = jitc_malloc_size(ptr);
+        }
+        
         scoped_pause();
         AllocType atype = backend == JitBackend::CUDA ? AllocType::Device
                                                       : AllocType::HostAsync;
         jitc_log(LogLevel::Debug,
                  "record(): allocating array of size %zu. To capture data.",
-                 dsize);
-        uint8_t *data = (uint8_t *) jitc_malloc(atype, dsize);
-        jitc_memcpy(backend, data, ptr, dsize);
+                 size);
+        uint8_t *data = (uint8_t *) jitc_malloc(atype, size);
+        jitc_memcpy(backend, data, ptr, size);
 
         uint32_t data_buf =
             jitc_var_mem_map(backend, VarType::UInt8, data, size, 1);
@@ -905,36 +914,6 @@ struct RecordThreadState : ThreadState {
         rv.rv_type = RecordType::Captured;
         rv.index = data_buf;
         this->recording.record_variables.push_back(rv);
-
-        return slot;
-    }
-
-    uint32_t capture_call_offsets(void *ptr, size_t size) {
-        size_t dsize = size * type_size[(uint32_t)VarType::UInt64];
-        scoped_pause();
-        AllocType atype = backend == JitBackend::CUDA ? AllocType::Device
-                                                      : AllocType::HostAsync;
-        uint64_t *offset = (uint64_t *)jitc_malloc(atype, dsize);
-        jitc_memcpy(backend, offset, ptr, dsize);
-
-        uint32_t offset_buf =
-            jitc_var_mem_map(backend, VarType::UInt64, offset, size, 1);
-
-        uint32_t slot = this->recording.record_variables.size();
-        jitc_log(LogLevel::Debug,
-                 "record(): capturing offset buffer at slot s%u", slot);
-        jitc_log(LogLevel::Debug, "    data=%s", jitc_var_str(offset_buf));
-
-        RecordVariable rv;
-        rv.rv_type = RecordType::Captured;
-        rv.index = offset_buf;
-        this->recording.record_variables.push_back(rv);
-
-        // auto it = this->ptr_to_slot.find(ptr);
-        // if (it == this->ptr_to_slot.end())
-        //     this->ptr_to_slot.insert({ptr, slot});
-        // else
-        //     it.value() = slot;
 
         return slot;
     }

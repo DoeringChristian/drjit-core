@@ -576,14 +576,12 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
                 if (param.type == ParamType::Input) {
                     ReplayVariable &rv = replay_variables[param.slot];
-                    jitc_assert(
-                        rv.data != nullptr || dry_run,
-                        "replay(): Encountered nullptr input parameter.");
-
                     jitc_log(LogLevel::Debug,
-                             " -> slot(%u, is_pointer=%u, data=%p, offset=%u)",
-                             param.slot, param.pointer_access, rv.data,
+                             " -> slot(%u, is_pointer=%u, offset=%u)",
+                             param.slot, param.pointer_access,
                              param.extra.offset);
+                    if(rv.data == nullptr && !dry_run )
+                        jitc_fail("replay(): Encountered nullptr in parameter s%u.", param.slot);
 
                     p->size = param.pointer_access
                                   ? 8
