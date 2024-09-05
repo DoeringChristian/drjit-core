@@ -564,7 +564,6 @@ struct RecordThreadState : ThreadState {
 
     /// Perform an assynchronous copy operation
     void memcpy_async(void *dst, const void *src, size_t size) override {
-        scoped_pause();
         jitc_log(LogLevel::Debug,
                  "record(): memcpy_async(dst=%p, src=%p, size=%zu)", dst,
                  src, size);
@@ -590,7 +589,10 @@ struct RecordThreadState : ThreadState {
             op.size             = size;
             this->recording.operations.push_back(op);
         }
-        this->internal->memcpy_async(dst, src, size);
+        {
+            scoped_pause();
+            this->internal->memcpy_async(dst, src, size);
+        }
         if(!paused && !has_var){
             // If we did not know the source variable, this memcpy might be
             // coming from a `jitc_call_upload` call.
