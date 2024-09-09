@@ -7,6 +7,12 @@
 #include "var.h"
 #include "profile.h"
 
+const char *op_type_name[(int) OpType::Count]{
+    "Barrier",     "KernelLaunch",   "MemsetAsync", "Reduce",
+    "Expand",      "ReduceExpanded", "PrefixSum",   "Compress",
+    "MemcpyAsync", "Mkperm",         "Aggregate",   "Free"
+};
+
 static bool dry_run = false;
 
 // This struct holds the data and tracks the size of varaibles,
@@ -694,6 +700,15 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 }
 
 void Recording::validate() {
+    for(uint32_t i = 0; i < this->record_variables.size(); i++){
+        RecordVariable &rv = this->record_variables[i];
+        if(rv.state == RecordVarState::Uninit){
+            jitc_log(LogLevel::Debug,
+                     "record(): Variable at slot s%u %p was left in an "
+                     "uninitialized state!",
+                     i, rv.ptr);
+        }
+    }
 }
 
 void jitc_record_start(JitBackend backend, const uint32_t *inputs,
