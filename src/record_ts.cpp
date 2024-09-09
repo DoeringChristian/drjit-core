@@ -18,14 +18,14 @@ struct ReplayVariable {
     // Tracks the size in bytes, of this allocation
     size_t data_size = 0;
     uint32_t index;
-    RecordType rv_type;
+    RecordVarInit init;
 
     ReplayVariable(RecordVariable &rv) {
         this->index = rv.index;
 
-        this->rv_type = rv.rv_type;
+        this->init = rv.init;
 
-        if (rv_type == RecordType::Captured) {
+        if (init == RecordVarInit::Captured) {
             // copy the variable, so that it isn't changed
             this->index = jitc_var_copy(this->index);
             
@@ -58,9 +58,9 @@ struct ReplayVariable {
         size_t size = (this->data_size / (size_t)tsize);
 
         if (size == 0)
-            jitc_fail("replay(): Error, determining size of variable! rv_type "
+            jitc_fail("replay(): Error, determining size of variable! init "
                       "%u, dsize=%zu",
-                      (uint32_t) this->rv_type, this->data_size);
+                      (uint32_t) this->init, this->data_size);
 
         if(size * (size_t)tsize != this->data_size)
             jitc_fail("replay(): Error, determining size of variable!");
@@ -269,7 +269,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                     jitc_log(LogLevel::Info,
                              " -> param slot(%u, is_pointer=%u, size=%u)",
                              info.slot, info.pointer_access, size);
-                    if(rv.rv_type == RecordType::Captured){
+                    if(rv.init == RecordVarInit::Captured){
                         jitc_log(LogLevel::Debug, "    label=%s",
                                  jitc_var_label(rv.index));
                         jitc_log(LogLevel::Debug, "    data=%s",
@@ -584,7 +584,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                     // if(rv.data == nullptr && !dry_run )
                     //     jitc_fail("replay(): Encountered nullptr in parameter s%u.", param.slot);
                         
-                    if(rv.rv_type == RecordType::Captured){
+                    if(rv.init == RecordVarInit::Captured){
                         jitc_log(LogLevel::Debug, "    captured");
                         jitc_log(LogLevel::Debug, "    label=%s",
                                  jitc_var_label(rv.index));
@@ -661,7 +661,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
         // if (rv.type != info.vtype)
         //     rv.prepare_input(info.vtype);
 
-        if (rv.rv_type == RecordType::Input) {
+        if (rv.init == RecordVarInit::Input) {
             // Use input variable
             jitc_log(LogLevel::Debug, "    uses input %u", rv.index);
             jitc_assert(rv.data, "replay(): freed an input variable "
@@ -669,7 +669,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
             uint32_t var_index = replay_inputs[rv.index];
             jitc_var_inc_ref(var_index);
             outputs[i] = var_index;
-        } else if (rv.rv_type == RecordType::Captured) {
+        } else if (rv.init == RecordVarInit::Captured) {
             jitc_log(LogLevel::Info, "    uses captured variable %u", rv.index);
             jitc_assert(rv.data, "replay(): freed an input variable "
                                  "that is passed through!");
@@ -688,18 +688,6 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
         // temporary variables
         jitc_log(LogLevel::Info, "    data=%p", rv.data);
         rv.data = nullptr;
-    }
-
-    for (uint32_t slot = 0; slot < replay_variables.size(); ++slot) {
-        ReplayVariable &rv = replay_variables[slot];
-        if (rv.data && rv.rv_type == RecordType::Other) {
-            jitc_log(LogLevel::Debug,
-                     "replay(): Freeing temporary data %p at slot %u", rv.data,
-                     slot);
-
-            jitc_free(rv.data);
-            rv.data = nullptr;
-        }
     }
 
     return true;
@@ -803,7 +791,7 @@ void jitc_record_abort(JitBackend backend) {
 
 void jitc_record_destroy(Recording *recording) {
     for (RecordVariable &rv : recording->record_variables) {
-        if (rv.rv_type == RecordType::Captured) {
+        if (rv.init == RecordVarInit::Captured) {
             jitc_var_dec_ref(rv.index);
         }
     }
