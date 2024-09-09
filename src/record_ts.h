@@ -26,7 +26,10 @@ enum class OpType {
     Mkperm,
     Aggregate,
     Free,
+    Count,
 };
+
+extern const char *op_type_name[(int) OpType::Count];
 
 struct Operation {
     OpType type;
@@ -83,6 +86,8 @@ struct RecordVariable {
     // used to deallocate unused variables during replay.
     uint32_t last_memset = 0;
     uint32_t last_memcpy = 0;
+
+    const void *ptr;
 
     RecordVariable() {
     }
@@ -653,9 +658,6 @@ struct RecordThreadState : ThreadState {
             for (uint32_t i = 0; i < size; ++i) {
                 AggregationEntry &p = agg[i];
 
-                jitc_log(LogLevel::Debug, " -> entry(src=%p, size=%i, offset=%u)", p.src,
-                         p.size, p.offset);
-
                 // There are three cases, we might have to handle.
                 // 1. The input is a pointer (size = 8 and it is known to the malloc cache)
                 // 2. The input is an evaluated variable (size < 0)
@@ -684,7 +686,7 @@ struct RecordThreadState : ThreadState {
                     // memcpy_async operation.
                     uint32_t slot = add_variable(p.src, RecordVariable());
                             
-                    jitc_log(LogLevel::Debug, "    var at slot %u", slot);
+                    jitc_log(LogLevel::Debug, "    var at slot s%u", slot);
 
                     ParamInfo info;
                     info.slot = slot;
@@ -693,9 +695,11 @@ struct RecordThreadState : ThreadState {
                     info.extra.offset = p.offset;
                     info.test_uninit = false;
                     add_param(info);
+                    
+                    jitc_log(LogLevel::Debug, "    entry(src=%p, size=%i, offset=%u)", p.src,
+                             p.size, p.offset);
                 } else {
                     // Literal
-                    jitc_log(LogLevel::Debug, "    literal");
                     ParamInfo info;
                     std::memcpy(&info.extra.data, &p.src, sizeof(uint64_t));
                     info.extra.offset = p.offset;
@@ -703,6 +707,8 @@ struct RecordThreadState : ThreadState {
                     info.type = ParamType::Register;
                     info.pointer_access = false;
                     add_param(info);
+                    
+                    jitc_log(LogLevel::Debug, "    literal");
                 }
             }
 
@@ -756,6 +762,8 @@ struct RecordThreadState : ThreadState {
 
     void notify_free(const void *ptr) override{
         if(has_variable(ptr)){
+            jitc_log(LogLevel::Debug, "record(): jitc_free(ptr=%p)", ptr);
+            
             uint32_t start = this->recording.dependencies.size();
             add_in_param(ptr, false);
             uint32_t end = this->recording.dependencies.size();
@@ -764,7 +772,6 @@ struct RecordThreadState : ThreadState {
             op.type = OpType::Free;
             op.dependency_range = std::pair(start, end);
 
-            jitc_log(LogLevel::Debug, "record(): jitc_free(ptr=%p)", ptr);
             this->ptr_to_slot.erase(ptr);
         }
     }
@@ -956,6 +963,7 @@ struct RecordThreadState : ThreadState {
                                              (size_t) v->size, 1);
 
         RecordVariable rv;
+        rv.ptr = ptr;
         rv.state = RecordVarState::Captured;
         rv.init  = RecordVarInit::Captured;
         rv.index = data_var;
@@ -1004,6 +1012,7 @@ struct RecordThreadState : ThreadState {
      */
     uint32_t add_variable(const void *ptr, RecordVariable rv) {
 
+        rv.ptr = ptr;
         auto it = this->ptr_to_slot.find(ptr);
 
         if (it == this->ptr_to_slot.end()) {
@@ -1046,12 +1055,18 @@ struct RecordThreadState : ThreadState {
         
         RecordVariable &rv = this->recording.record_variables[info.slot];
         if (info.type == ParamType::Output){
+
+            jitc_log(LogLevel::Debug, " <- param s%u", info.slot);
+            
             if(info.vtype != VarType::Void)
                 rv.type = info.vtype;
             
             rv.state = RecordVarState::OpOutput;
             
         }else if (info.type == ParamType::Input){
+            
+            jitc_log(LogLevel::Debug, " -> param s%u", info.slot);
+            
             if(info.test_uninit && rv.state == RecordVarState::Uninit)
                 jitc_fail("record(): Varaible at slot s%u was read from by "
                           "operation o%u, but has not yet been initialized!",
