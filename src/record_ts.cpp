@@ -703,10 +703,9 @@ void Recording::validate() {
     for(uint32_t i = 0; i < this->record_variables.size(); i++){
         RecordVariable &rv = this->record_variables[i];
         if(rv.state == RecordVarState::Uninit){
-            jitc_log(LogLevel::Debug,
-                     "record(): Variable at slot s%u %p was left in an "
-                     "uninitialized state!",
-                     i, rv.ptr);
+            jitc_fail("record(): Variable at slot s%u %p was left in an "
+                      "uninitialized state!",
+                      i, rv.ptr);
         }
     }
 }
