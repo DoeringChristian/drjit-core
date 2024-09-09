@@ -52,10 +52,23 @@ struct Operation {
 /// Output variables are only tracked through the outputs array, as this
 /// information is only needed when constructing the output variables.
 ///
-enum class RecordType {
-    Other,
+enum class RecordVarState {
+    /// This variable was not initialized
+    Uninit,
+    /// This variable has been created by an operation
+    OpOutput,
+    /// This variable is part of the function input
     Input,
+    /// This variable has been captured
     Captured,
+};
+
+
+/// Tracks how this variable was initialized
+enum class RecordVarInit{
+    None,
+    Captured,
+    Input,
 };
 
 struct RecordVariable {
@@ -63,7 +76,10 @@ struct RecordVariable {
     /// Stores index into input array if variable is input or index of captured
     /// variable
     uint32_t index = 0;
-    RecordType rv_type = RecordType::Other;
+    /// Tracks the current state of a variable
+    RecordVarState state = RecordVarState::Uninit;
+    /// Tracks how this variable has been initialized
+    RecordVarInit init = RecordVarInit::None;
     // used to deallocate unused variables during replay.
     uint32_t last_memset = 0;
     uint32_t last_memcpy = 0;
@@ -77,8 +93,8 @@ struct RecordVariable {
      * it to the already saved RecordVariable.
      */
     RecordVariable &operator|=(const RecordVariable &rhs) {
-        if (this->rv_type == RecordType::Other) {
-            this->rv_type = rhs.rv_type;
+        if (this->state == RecordVarState::Uninit) {
+            this->state = rhs.state;
             this->index = rhs.index;
         }
         if(rhs.last_memcpy)
@@ -93,7 +109,8 @@ struct ParamInfo {
     uint32_t slot;
     ParamType type = ParamType::Input;
     VarType vtype = VarType::Void;
-    bool pointer_access;
+    bool pointer_access = false;
+    bool test_uninit = true;
     struct {
         uint32_t offset;
         uint64_t data;
@@ -183,29 +200,7 @@ struct RecordThreadState : ThreadState {
 
             size_t input_size = 0;
             size_t ptr_size = 0;
-
-            PtrToSlot call_offsets;
-
-            // Iterate over calls and capture offset buffers, putting them into
-            // the call_offsets map
-            for (const uint32_t &index : *kernel_calls) {
-                Variable *v = jitc_var(index);
-                if((VarKind)v->kind != VarKind::Call)
-                    jitc_fail("Variable in kernel_calls is not a Call variable "
-                              "kind!");
-                
-                // Walk the dependencies of the call variable
-                uint32_t offset_v = v->dep[2];
-                v = jitc_var(offset_v);
-                uint32_t offset_buf = v->dep[3];
-                v = jitc_var(offset_buf);
-                
-                void *ptr = v->data;
-
-                // uint32_t call_offset = capture_variable(offset_buf, ptr, false, false);
-                // call_offsets.insert({ptr, call_offset});
-            }
-
+            
             // Handle reduce_expanded case
             for (uint32_t param_index = 0;
                  param_index < kernel_param_ids->size(); param_index++) {
@@ -274,12 +269,7 @@ struct RecordThreadState : ThreadState {
 
                 uint32_t slot;
                 if (param_type == ParamType::Input){
-                    // Determine if this variable is a call offset buffer
-                    // then use the captured variable.
-                    auto it = call_offsets.find(ptr);
-                    if(it != call_offsets.end()){
-                        slot = it.value();
-                    }else if(has_variable(ptr)) {
+                    if(has_variable(ptr)) {
                         slot = this->get_variable(ptr);
                     }else{
                         slot = capture_variable(index);
@@ -701,6 +691,7 @@ struct RecordThreadState : ThreadState {
                     info.type = ParamType::Input;
                     info.pointer_access = p.size == 8;
                     info.extra.offset = p.offset;
+                    info.test_uninit = false;
                     add_param(info);
                 } else {
                     // Literal
@@ -766,7 +757,7 @@ struct RecordThreadState : ThreadState {
     void notify_free(const void *ptr) override{
         if(has_variable(ptr)){
             uint32_t start = this->recording.dependencies.size();
-            add_in_param(ptr);
+            add_in_param(ptr, false);
             uint32_t end = this->recording.dependencies.size();
 
             Operation op;
@@ -785,7 +776,8 @@ struct RecordThreadState : ThreadState {
         uint32_t input_index = this->recording.inputs.size();
         Variable *v = jitc_var(input);
         RecordVariable rv;
-        rv.rv_type = RecordType::Input;
+        rv.state = RecordVarState::Input;
+        rv.init = RecordVarInit::Input;
         rv.index = input_index;
         rv.type = (VarType)v->type;
         uint32_t slot = this->add_variable(v->data, rv);
@@ -801,10 +793,7 @@ struct RecordThreadState : ThreadState {
         if (!has_variable(v->data)) {
             slot = capture_variable(output);
         } else {
-            RecordVariable rv;
-            rv.rv_type = RecordType::Other;
-
-            slot = this->add_variable(v->data, rv);
+            slot = this->get_variable(v->data);
         }
 
         jitc_log(LogLevel::Trace,
@@ -967,8 +956,9 @@ struct RecordThreadState : ThreadState {
                                              (size_t) v->size, 1);
 
         RecordVariable rv;
-        rv.rv_type = RecordType::Captured;
-        rv.index   = data_var;
+        rv.state = RecordVarState::Captured;
+        rv.init  = RecordVarInit::Captured;
+        rv.index = data_var;
 
         // Add the frozen value to the ptr_to_slot map
         // NOTE: this only works if we are using notify_free.
@@ -1053,21 +1043,38 @@ struct RecordThreadState : ThreadState {
     }
 
     void add_param(ParamInfo info) {
-        if(info.type == ParamType::Output && info.vtype != VarType::Void)
-            this->recording.record_variables[info.slot].type = info.vtype;
-        if(info.type == ParamType::Input && info.vtype == VarType::Void)
-            info.vtype = this->recording.record_variables[info.slot].type;
+        
+        RecordVariable &rv = this->recording.record_variables[info.slot];
+        if (info.type == ParamType::Output){
+            if(info.vtype != VarType::Void)
+                rv.type = info.vtype;
+            
+            rv.state = RecordVarState::OpOutput;
+            
+        }else if (info.type == ParamType::Input){
+            if(info.test_uninit && rv.state == RecordVarState::Uninit)
+                jitc_fail("record(): Varaible at slot s%u was read from by "
+                          "operation o%u, but has not yet been initialized!",
+                          info.slot,
+                          (uint32_t) this->recording.operations.size());
+            
+            if (info.vtype == VarType::Void)
+                info.vtype = rv.type;
+            
+        }
+        
         this->recording.dependencies.push_back(info);
     }
-    void add_in_param(uint32_t slot) {
+    void add_in_param(uint32_t slot, bool test_uninit = true) {
         ParamInfo info;
         info.type = ParamType::Input;
         info.slot = slot;
+        info.test_uninit = test_uninit;
         add_param(info);
     }
-    void add_in_param(const void *ptr){
+    void add_in_param(const void *ptr, bool test_uninit = true){
         uint32_t slot = this->get_variable(ptr);
-        add_in_param(slot);
+        add_in_param(slot, test_uninit);
     }
     void add_out_param(uint32_t slot, VarType vtype) {
         ParamInfo info;
