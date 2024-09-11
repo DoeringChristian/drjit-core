@@ -2454,6 +2454,22 @@ extern JIT_EXPORT uint32_t jit_array_read(uint32_t source, uint32_t offset,
                                           uint32_t mask);
 extern JIT_EXPORT void jitc_test_record(JitBackend backend);
 
+extern JIT_EXPORT void jit_record_start(JitBackend backend, 
+                                        const uint32_t *inputs, 
+                                        uint32_t n_inputs);
+
+struct RecordThreadState;
+
+extern JIT_EXPORT RecordThreadState *jit_record_stop(JitBackend backend, 
+                                                     const uint32_t *outputs, 
+                                                     uint32_t n_outputs);
+
+extern JIT_EXPORT void jit_record_replay(RecordThreadState *ts,
+                                         const uint32_t *inputs,
+                                         uint32_t *outputs);
+
+extern JIT_EXPORT void jit_record_destroy(RecordThreadState * ts);
+
 #if defined(__cplusplus)
 }
 #endif
