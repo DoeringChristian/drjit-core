@@ -202,8 +202,8 @@ struct RecordThreadState : ThreadState {
                 
                 void *ptr = v->data;
 
-                uint32_t call_offset = capture_variable(offset_buf, ptr, false, false);
-                call_offsets.insert({ptr, call_offset});
+                // uint32_t call_offset = capture_variable(offset_buf, ptr, false, false);
+                // call_offsets.insert({ptr, call_offset});
             }
 
             // Handle reduce_expanded case
@@ -564,12 +564,15 @@ struct RecordThreadState : ThreadState {
 
     /// Perform an assynchronous copy operation
     void memcpy_async(void *dst, const void *src, size_t size) override {
-        if (!paused && has_variable(src)) {
-            jitc_log(LogLevel::Debug,
-                     "record(): memcpy_async(dst=%p, src=%p, size=%zu)", dst,
-                     src, size);
+        scoped_pause();
+        jitc_log(LogLevel::Debug,
+                 "record(): memcpy_async(dst=%p, src=%p, size=%zu)", dst,
+                 src, size);
+        bool has_var = has_variable(src);
+        if (!paused && (has_var)) {
 
-            uint32_t src_id = this->get_variable(src);
+            uint32_t src_id;
+            src_id = this->get_variable(src);
 
             RecordVariable rv;
             rv.last_memcpy  = this->recording.operations.size() + 1;
@@ -587,8 +590,26 @@ struct RecordThreadState : ThreadState {
             op.size             = size;
             this->recording.operations.push_back(op);
         }
-        scoped_pause();
-        return this->internal->memcpy_async(dst, src, size);
+        this->internal->memcpy_async(dst, src, size);
+        if(!paused && !has_var){
+            // If we did not know the source variable, this memcpy might be
+            // coming from a `jitc_call_upload` call.
+            // If that is the case, we have to capture the offset buffer.
+            // Since the pointer might be used, for example by an aggregate call
+            // (nested calls), we have to overwrite the RecordVariable.
+            //
+            CallData *call = nullptr;
+            for (CallData *tmp : calls_assembled) {
+                if (tmp->offset == dst) {
+                    call = tmp;
+                    break;
+                }
+            }
+            if(call){
+                capture_data(dst, size, VarType::UInt64, true, true);
+                jitc_log(LogLevel::Debug, "    captured call offset");
+            }
+        }
     }
 
     /// Sum over elements within blocks
@@ -661,17 +682,15 @@ struct RecordThreadState : ThreadState {
 
                     bool has_var = has_variable(p.src);
 
-                    // NOTE: we have to capture the input to aggregate because
-                    // of nested vcalls.
-                    // The inner call's offset buffer is never passed to the
-                    // kernel only to the aggregate call.
-                    uint32_t slot;
                     if(!has_var){
-                        slot = capture_data(p.src, 0);
-                        jitc_log(LogLevel::Debug, "    captured");
+                        jitc_log(LogLevel::Debug, "    deferring capture");
                     }
-                    else
-                        slot = get_variable(p.src);
+                    // NOTE: Offset buffers of nested calls might be used by
+                    // this aggregate call, before the offset buffer is
+                    // uploaded.
+                    // We therefore defer the offset buffer capture to the
+                    // memcpy_async operation.
+                    uint32_t slot = add_variable(p.src, RecordVariable());
                             
                     jitc_log(LogLevel::Debug, "    var at slot %u", slot);
 
@@ -888,42 +907,25 @@ struct RecordThreadState : ThreadState {
         this->recording.requires_dry_run = true;
     }
 
-    uint32_t capture_data(const void *ptr, size_t size){
-        if (!size){
-            size = jitc_malloc_size(ptr);
+    uint32_t capture_data(const void *ptr, size_t dsize, VarType vt = VarType::UInt8, bool remember = false, bool overwrite = false){
+        if (!dsize){
+            dsize = jitc_malloc_size(ptr);
         }
-        
-        scoped_pause();
-        AllocType atype = backend == JitBackend::CUDA ? AllocType::Device
-                                                      : AllocType::HostAsync;
-        jitc_log(LogLevel::Debug,
-                 "record(): allocating array of size %zu. To capture data.",
-                 size);
-        uint8_t *data = (uint8_t *) jitc_malloc(atype, size);
-        jitc_memcpy(backend, data, ptr, size);
 
-        uint32_t data_buf =
-            jitc_var_mem_map(backend, VarType::UInt8, data, size, 1);
+        uint32_t size;
+        size = dsize / type_size[(uint32_t)vt];
 
-        uint32_t slot = this->recording.record_variables.size();
-        jitc_log(LogLevel::Debug,
-                 "record(): capturing data at slot s%u at %p [%zu]", slot, ptr,
-                 size);
+        uint32_t data = jitc_var_mem_map(backend, vt, (void*)ptr, size, false);
 
-        RecordVariable rv;
-        rv.rv_type = RecordType::Captured;
-        rv.index = data_buf;
-        this->recording.record_variables.push_back(rv);
-
-        return slot;
+        return capture_variable(data, ptr, remember, false, overwrite);
     }
 
     /**
      * This function tries to capture a variable that is not known to the
      * recording threadstate.
      */
-    uint32_t capture_variable(uint32_t index, void *ptr = nullptr,
-                              bool remember = true, bool test_scope = true) {
+    uint32_t capture_variable(uint32_t index, const void *ptr = nullptr,
+                              bool remember = true, bool test_scope = true, bool overwrite = false) {
 
         scoped_pause();
         Variable *v = jitc_var(index);
@@ -948,10 +950,9 @@ struct RecordThreadState : ThreadState {
 
         // Have to copy the variable, so that it cannot be modified by other
         // calls later.
-        uint32_t slot = this->recording.record_variables.size();
         jitc_log(LogLevel::Debug,
-                 "record(): capturing variable r%u, type=%s at slot s%u", index,
-                 type_name[(uint32_t) v->type], slot);
+                 "record(): capturing variable r%u, type=%s, data=%s", index,
+                 type_name[(uint32_t) v->type], jitc_var_str(index));
 
         AllocType atype = backend == JitBackend::CUDA ? AllocType::Device
                                                       : AllocType::HostAsync;
@@ -966,18 +967,39 @@ struct RecordThreadState : ThreadState {
         RecordVariable rv;
         rv.rv_type = RecordType::Captured;
         rv.index   = data_var;
-        this->recording.record_variables.push_back(rv);
 
         // Add the frozen value to the ptr_to_slot map
         // NOTE: this only works if we are using notify_free.
         // But it could allow us to capture call offsets here.
-        if(remember){
+        uint32_t slot;
+        if(overwrite){
             auto it = this->ptr_to_slot.find(ptr);
-            if (it == this->ptr_to_slot.end())
+
+            if (it == this->ptr_to_slot.end()) {
+                slot = this->recording.record_variables.size();
+
+                this->recording.record_variables.push_back(rv);
+
                 this->ptr_to_slot.insert({ ptr, slot });
-            else
-                it.value() = slot;
+            } else {
+                slot = it.value();
+                jitc_log(LogLevel::Debug, "    overwriting at s%u", slot);
+                this->recording.record_variables[slot] = rv;
+            }
         }
+        else{
+            slot = this->recording.record_variables.size();
+            this->recording.record_variables.push_back(rv);
+            if (remember) {
+                auto it = this->ptr_to_slot.find(ptr);
+                if (it == this->ptr_to_slot.end())
+                    this->ptr_to_slot.insert({ ptr, slot });
+                else
+                    it.value() = slot;
+            }
+        }
+
+        jitc_log(LogLevel::Debug, "    at slot s%u", slot);
 
         return slot;
     }
