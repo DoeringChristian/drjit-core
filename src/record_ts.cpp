@@ -315,7 +315,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                     ts->optix_sbt = op.sbt;
                 }
                 ts->launch(kernel, launch_size, &kernel_params,
-                           &kernel_param_ids, &kernel_calls);
+                           &kernel_param_ids);
                 if (op.uses_optix)
                     uses_optix = false;
             }
