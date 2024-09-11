@@ -197,8 +197,7 @@ struct RecordThreadState : ThreadState {
 
     Task *launch(Kernel kernel, uint32_t size,
                  std::vector<void *> *kernel_params,
-                 const std::vector<uint32_t> *kernel_param_ids,
-                 const std::vector<uint32_t> *kernel_calls) override {
+                 const std::vector<uint32_t> *kernel_param_ids) override {
         if (!paused) {
             uint32_t kernel_param_offset =
                 this->backend == JitBackend::CUDA ? 1 : 3;
@@ -392,7 +391,7 @@ struct RecordThreadState : ThreadState {
         }
         scoped_pause();
         return this->internal->launch(kernel, size, kernel_params,
-                                      kernel_param_ids, kernel_calls);
+                                      kernel_param_ids);
     }
 
     /// Fill a device memory region with constants of a given type
