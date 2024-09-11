@@ -652,6 +652,8 @@ struct ThreadState {
     ThreadState() = default;
     ThreadState(const ThreadState &other) = default;
 
+    virtual void barrier() = 0;
+
     virtual Task *launch(Kernel kernel, uint32_t size,
                          std::vector<void *> *kernel_params,
                          const std::vector<uint32_t> *kernel_param_ids) = 0;
