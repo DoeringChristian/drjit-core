@@ -79,6 +79,8 @@ struct CallData {
     }
 };
 
+extern std::vector<CallData *> calls_assembled;
+
 extern uint32_t jitc_var_loop_init(uint32_t *indices, uint32_t n_indices);
 
 extern void jitc_var_call(const char *domain, bool symbolic, uint32_t self,
