@@ -272,8 +272,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                     if(rv.rv_type == RecordType::Captured){
                         jitc_log(LogLevel::Debug, "    label=%s",
                                  jitc_var_label(rv.index));
-                        // jitc_log(LogLevel::Debug, "    data=%s",
-                        //          jitc_var_str(rv.index));
+                        jitc_log(LogLevel::Debug, "    data=%s",
+                                 jitc_var_str(rv.index));
                     }
                 } else {
                     jitc_log(LogLevel::Info,
@@ -582,6 +582,14 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                              param.extra.offset);
                     if(rv.data == nullptr && !dry_run )
                         jitc_fail("replay(): Encountered nullptr in parameter s%u.", param.slot);
+                        
+                    if(rv.rv_type == RecordType::Captured){
+                        jitc_log(LogLevel::Debug, "    captured");
+                        jitc_log(LogLevel::Debug, "    label=%s",
+                                 jitc_var_label(rv.index));
+                        jitc_log(LogLevel::Debug, "    data=%s",
+                                 jitc_var_str(rv.index));
+                    }
 
                     p->size = param.pointer_access
                                   ? 8
