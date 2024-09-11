@@ -2,6 +2,8 @@
 
 struct LLVMThreadState: ThreadState{
 
+    void barrier() override{}
+
     Task *launch(Kernel kernel, uint32_t size,
                  std::vector<void *> *kernel_params,
                  const std::vector<uint32_t> *) override;

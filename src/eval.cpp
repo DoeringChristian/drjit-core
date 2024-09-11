@@ -708,6 +708,7 @@ void jitc_eval_impl(ThreadState *ts) {
         scheduled_tasks.push_back(jitc_run(ts, group));
     }
 
+    ts->barrier();
     if (ts->backend == JitBackend::LLVM) {
         if (scheduled_tasks.size() == 1) {
             task_release(jitc_task);
