@@ -602,7 +602,7 @@ struct RecordThreadState : ThreadState {
                 }
             }
             if(call){
-                capture_data(dst, size, VarType::UInt64, true, true);
+                capture_call_offset(dst, size);
                 jitc_log(LogLevel::Debug, "    captured call offset");
             }
         }
@@ -904,17 +904,43 @@ struct RecordThreadState : ThreadState {
         this->recording.requires_dry_run = true;
     }
 
-    uint32_t capture_data(const void *ptr, size_t dsize, VarType vt = VarType::UInt8, bool remember = false, bool overwrite = false){
-        if (!dsize){
-            dsize = jitc_malloc_size(ptr);
+    uint32_t capture_call_offset(const void *ptr, size_t dsize){
+        uint32_t size;
+        size = dsize / type_size[(uint32_t)VarType::UInt64];
+        
+        AllocType atype = backend == JitBackend::CUDA ? AllocType::Device
+                                                      : AllocType::HostAsync;
+        uint64_t *data = (uint64_t *) jitc_malloc(atype, dsize);
+        jitc_memcpy(backend, data, ptr, dsize);
+
+        uint32_t data_var =
+            jitc_var_mem_map(backend, VarType::UInt64, data, size, true);
+        
+        RecordVariable rv;
+        rv.ptr = ptr;
+        rv.state = RecordVarState::Captured;
+        rv.init  = RecordVarInit::Captured;
+        rv.index = data_var;
+        
+        uint32_t slot;
+        auto it = this->ptr_to_slot.find(ptr);
+        if (it == this->ptr_to_slot.end()) {
+            slot = this->recording.record_variables.size();
+
+            this->recording.record_variables.push_back(rv);
+
+            this->ptr_to_slot.insert({ ptr, slot });
+        } else {
+            slot = it.value();
+            RecordVariable &old = this->recording.record_variables[slot];
+            if(old.init != RecordVarInit::None)
+                jitc_fail("record(): Tried to overwrite a initialized variable "
+                          "with an offset buffer!");
+
+            this->recording.record_variables[slot] = rv;
         }
 
-        uint32_t size;
-        size = dsize / type_size[(uint32_t)vt];
-
-        uint32_t data = jitc_var_mem_map(backend, vt, (void*)ptr, size, false);
-
-        return capture_variable(data, ptr, remember, false, overwrite);
+        return slot;
     }
 
     /**
@@ -936,12 +962,13 @@ struct RecordThreadState : ThreadState {
 
         // Might make sense to limit the size of captured variables to 1.
         // if (v->size > 1)
-        //     jitc_raise("record(): Variable r%u[%u] -> %p, label=%s, data=%s,
-        //     "
-        //                "of size > 1 was created while recording.",
-        //                index, v->size, v->data, jitc_var_label(index),
-        //                jitc_var_str(index));
+        jitc_raise("record(): Variable r%u[%u] -> %p, label=%s, data=%s, of "
+                   "size > 1 was created while recording.",
+                   index, v->size, v->data, jitc_var_label(index),
+                   jitc_var_str(index));
 
+        return 0;
+        /*
         if (!ptr)
             ptr = v->data;
 
@@ -1001,6 +1028,7 @@ struct RecordThreadState : ThreadState {
         jitc_log(LogLevel::Debug, "    at slot s%u", slot);
 
         return slot;
+        */
     }
 
     /**
