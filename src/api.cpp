@@ -8,6 +8,7 @@
 */
 
 #include "internal.h"
+#include "record_ts.h"
 #include "var.h"
 #include "eval.h"
 #include "log.h"
@@ -1496,4 +1497,48 @@ int jit_leak_warnings() {
 
 void jit_set_leak_warnings(int value) {
     state.leak_warnings = (bool) value;
+}
+    
+void jit_freeze_start(JitBackend backend, const uint32_t *inputs,
+                      uint32_t n_inputs) {
+    lock_guard guard(state.lock);
+    return jitc_freeze_start(backend, inputs, n_inputs);
+}
+
+Recording *jit_freeze_stop(JitBackend backend, const uint32_t *outputs,
+                                   uint32_t n_outputs) {
+    lock_guard guard(state.lock);
+    return jitc_freeze_stop(backend, outputs, n_outputs);
+}
+
+bool jit_freeze_pause(JitBackend backend) {
+    lock_guard guard(state.lock);
+    return jitc_freeze_pause(backend);
+}
+
+bool jit_freeze_resume(JitBackend backend) {
+    lock_guard guard(state.lock);
+    return jitc_freeze_resume(backend);
+}
+
+void jit_freeze_abort(JitBackend backend) {
+    lock_guard guard(state.lock);
+    return jitc_freeze_abort(backend);
+}
+
+void jit_freeze_replay(Recording *recording, const uint32_t *inputs,
+                       uint32_t *outputs) {
+    lock_guard guard(state.lock);
+    jitc_freeze_replay(recording, inputs, outputs);
+}
+
+int jit_freeze_dry_run(Recording *recording, const uint32_t *inputs,
+                       uint32_t *outputs){
+    lock_guard guard(state.lock);
+    return jitc_freeze_dry_run(recording, inputs, outputs);
+}
+
+void jit_freeze_destroy(Recording *recording){
+    lock_guard guard(state.lock);
+    jitc_freeze_destroy(recording);
 }
