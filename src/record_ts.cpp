@@ -15,8 +15,10 @@ const char *op_type_name[(int) OpType::Count]{
 
 static bool dry_run = false;
 
-// This struct holds the data and tracks the size of varaibles,
-// used during replay.
+/**
+ * Represents a variable during replay.
+ * It is created from the RecordVariable at the top of the replay function.
+ */
 struct ReplayVariable {
     void *data = nullptr;
     // Tracks the capacity, this allocation has been allocated for
@@ -42,6 +44,7 @@ struct ReplayVariable {
         }
     }
 
+    /// Initializes the \ref ReplayVariable from a function input.
     void init_from_input(Variable *input_variable){
         this->data = input_variable->data;
         this->alloc_size = type_size[input_variable->type] * input_variable->size;
@@ -57,6 +60,12 @@ struct ReplayVariable {
     }
     /**
      * Calculate the number of elements given some type size.
+     * This depends on how an operation accesses a variable.
+     * For example, a memcpy operation might access a variable as an array of
+     * \ref uint8_t types, whereas a kernel can access the same variable as an
+     * array of \ref uint64_t.
+     * This changes the size of the variable when inferring the size of the
+     * kernel launch.
      */
     uint32_t size(uint32_t tsize){
         if (tsize == 0)
@@ -169,8 +178,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                  replay_inputs[i], this->inputs[i]);
     }
 
-    // Execute kernels and allocate missing output variables
-
+    // The main loop that executes each operation
     for (uint32_t i = 0; i < this->operations.size(); ++i) {
         Operation &op = this->operations[i];
         ProfilerPhase profiler(pr_operation);
@@ -193,6 +201,9 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
             jitc_log(LogLevel::Debug, "replay(): launching kernel %u %016llx",
                      n_kernels++, (unsigned long long) op.kernel.hash.high64);
+
+            // Reconstruct the \ref kernel_params for this launch given the
+            // allocations when replaying.
             kernel_params.clear();
 
             if (backend == JitBackend::CUDA) {
@@ -206,7 +217,13 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                     kernel_params.push_back(nullptr);
             }
 
-            // Inferr launch size.
+            // Infer kernel launch size
+
+            // We first infer the size of the input variable, given how they are
+            // accessed by the kernel (i.e. as what type).
+            // While doing this, we also record the maximum size of variables
+            // accessd directly and through pointers separately.
+            // This will then be used when infering the kernel launch size.
 
             jitc_log(LogLevel::Debug, "replay(): inferring kernel launch size");
 
@@ -236,6 +253,15 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                         ptr_size = std::max(ptr_size, size);
                 }
             }
+
+            // Given the maximum size of the input variables (accessed directly
+            // and through pointers) we can infer the kernel launch size.
+            // We assume that the launch size is either a multiple of the
+            // maximum input variable (directly accessed) or if the kernel has
+            // no direct input variable, a multiple or fraction of the largest
+            // variable accessed through a pointer.
+            // If the launch size could not be inferred, we use the recorded
+            // size.
 
             uint32_t launch_size = 0;
             if (op.input_size > 0) {
@@ -272,7 +298,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 launch_size = op.size;
             }
 
-            // Allocate Missing variables for kernel launch.
+            // Allocate output variables for kernel launch.
             // The assumption here is that for every kernel launch, the inputs
             // are already allocated. Therefore we only allocate output
             // variables, which have the same size as the kernel.
