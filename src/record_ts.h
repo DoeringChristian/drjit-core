@@ -33,6 +33,20 @@ extern const char *op_type_name[(int) OpType::Count];
 
 /**
  * Represents an operation, that was recorded by a \ref RecordThreadState.
+ *
+ * To record an operation the first step is to get the current size of the
+ * dependencies vector.
+ * uint32_t start = m_recording.dependencies.size();
+ *
+ * Then, the parameters can be added.
+ * add_out_param(ptr_id, VarType::Void);
+ *
+ * Finally, the size after adding the paramters can be read and the operation
+ * can be pushed.
+ * uint32_t end = m_recording.dependencies.size();
+ *
+ * Operation op;
+ * op.dependency_range = std::pair(start, end);
  */
 struct Operation {
     OpType type;
@@ -627,7 +641,17 @@ private:
     /**
      * Record the Expand operation, corresponding to the `jitc_var_expand` call,
      * whith which the variable `index` has been expanded.
-     * This is called before a kernel is recorded.
+     *
+     * Reductions in LLVM might be split into three operations.
+     * First the variable is expanded by its size times the number of workers +
+     * 1 Then the kernel writes into the expanded variable with some offset, and
+     * finally the variable is reduced.
+     * The expand operation allocates a new memory region and copies the old
+     * content into it.
+     * We catch this case if the input variable of a kernel has a reduce_op
+     * asociated with it.
+     * The source variable is discovered by walking the operations to the last
+     * memcpy and memset, which are then disabled by this function.
      */
     void record_expand(uint32_t index);
 
