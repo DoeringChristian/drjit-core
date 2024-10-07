@@ -10,7 +10,7 @@
 #include <algorithm>
 #include <cstdint>
 
-// HashMap used to deduplicate variables
+/// HashMap, mapping an allocation to a recorded variable
 using PtrToSlot = tsl::robin_map<const void *, uint32_t, PointerHasher>;
 
 enum class OpType {
@@ -31,26 +31,41 @@ enum class OpType {
 
 extern const char *op_type_name[(int) OpType::Count];
 
+/**
+ * Represents an operation, that was recorded by a \ref RecordThreadState.
+ */
 struct Operation {
     OpType type;
-    // Indices into the dependencies vector
+    /// Indices into the dependencies vector
     std::pair<uint32_t, uint32_t> dependency_range;
-    // Kernel hash if a kernel was launched
     union {
+        /// Additional information of a kernel launch
         struct {
             KernelKey *key;
             Kernel kernel;
             XXH128_hash_t hash;
         } kernel;
+        /// The reduce type of a reduction operation
         ReduceOp rtype;
+        /// Weather a prefix sum operation is exclusive
         bool exclusive;
+        /// The bucket count for the mkperm operation
         uint32_t bucket_count;
+        /// Additional data such as the source of memset
         uint64_t data;
     };
+    /// Records the size of the operation.
     size_t size;
+    /// Records the size of the largest input variable (directly accessed or
+    /// through a pointer if the kernel has no direct inputs).
     size_t input_size = 0;
-    bool enabled = true;
+    /// Weather this operation is enabled. We might have to disable some
+    /// operations after the fact, and removing them from the Recording would be
+    /// more complicated.
+    bool enabled    = true;
+    /// Does this operation use optix?
     bool uses_optix = false;
+    /// A copy of the shader binding table, used by the kernel.
     OptixShaderBindingTable *sbt;
 };
 
@@ -71,7 +86,7 @@ enum class RecordVarState {
 };
 
 
-/// Tracks how this variable was initialized
+/// Records how this variable was initialized
 enum class RecordVarInit{
     None,
     Captured,
@@ -79,18 +94,22 @@ enum class RecordVarInit{
 };
 
 struct RecordVariable {
-    VarType type = VarType::Void;
     /// Stores index into input array if variable is input or index of captured
     /// variable
     uint32_t index = 0;
-    /// Tracks the current state of a variable
-    RecordVarState state = RecordVarState::Uninit;
-    /// Tracks how this variable has been initialized
+    /// Records how this variable has been initialized
     RecordVarInit init = RecordVarInit::None;
-    // used to deallocate unused variables during replay.
+
+    /// Tracks the last memset and memcpy operations necessary for recording the
+    /// expand operation.
     uint32_t last_memset = 0;
     uint32_t last_memcpy = 0;
 
+    /// Tracks the current state of a variable
+    RecordVarState state = RecordVarState::Uninit;
+    /// Tracks the current type of the variable
+    VarType type = VarType::Void;
+    /// Tracks the pointer of the variable for debug purposes
     const void *ptr;
 
     RecordVariable() {
@@ -114,15 +133,32 @@ struct RecordVariable {
     }
 };
 
+/**
+ * This represents how a variable is accessed by an operation.
+ */
 struct ParamInfo {
+    /// References the variable in \ref Recording.record_variables that is accessed.
     uint32_t slot;
-    ParamType type = ParamType::Input;
-    VarType vtype = VarType::Void;
+    /// Records how the variable was accessed i.e. was it the output or input
+    /// of/to a kernel.
+    ParamType type      = ParamType::Input;
+    /// The variable type as which the access occured. Different operations
+    /// might reinterpret the same allocation as different types this changes
+    /// the inferred launch size of the operation.
+    /// For example, a memcpy operation interprets the allocation as `UInt8`
+    /// types, whereas a kernel interprets it as `UInt64`.
+    VarType vtype       = VarType::Void;
+    /// Was this allocation accessed through a pointer?
     bool pointer_access = false;
+    /// Should the next input operation fail, if the variable is still uninitialized?
     bool test_uninit = true;
     struct {
+        /// Represents the offset of that parameter for aggregate operations.
         uint32_t offset;
+        /// Represents some literal data when aggregating literals.
         uint64_t data;
+        /// The type size, when the actuall type is not known. For example for
+        /// the aggregate operation.
         int32_t type_size;
     } extra;
 
@@ -135,29 +171,60 @@ struct ParamInfo {
     }
 };
 
+/**
+ * \brief Represents a frozen function recording. And can be used to replay it.
+ */
 struct Recording {
-
+    /// Weather this recording requires a dryrun, to discover the size of
+    /// certain operations.
     bool requires_dry_run = false;
 
+    /// The variables used in this recording.
+    /// Each variable refers to an allocation.
+    /// If an allocation reuses a memory region, it is refered to by a separate
+    /// variable.
     std::vector<RecordVariable> record_variables;
 
+    /// This vector maps the flat and deduplicated inputs to the frozen to their
+    /// variables in the \ref record_variables array.
     std::vector<uint32_t> inputs;
+    /// This vector maps the flat outputs of the frozen function to their
+    /// recorded variables and how they have been accessed.
     std::vector<ParamInfo> outputs;
 
+    /// Records the operations performed by this frozen function recording.
     std::vector<Operation> operations;
+    /// Every operation refers to some number of variables, and encodes how they
+    /// are accessed. Instead of allocating a vector for each operation, \ref
+    /// Operation struct contains a pair that indexes into this vector.
     std::vector<ParamInfo> dependencies;
 
+    /// The backend, which was used while recording.
     JitBackend backend;
 
+    /// Replays the recording, given some inputs and fills the outputs with the
+    /// created variable indices.
+    /// Note that both \ref replay_input and \replay output have to have the
+    /// same size as the number of inputs and outputs with which the frozen
+    /// function was recorded.
     int replay(const uint32_t *replay_input, uint32_t *outputs);
+    
+    /// Counter, counting the number of kernels for debugging.
     uint32_t n_kernels = 0;
 
-
+    /// This function is called after recording and checks that the recording is
+    /// valid i.e. that no variables where left uninitialized.
     void validate();
-    /// Checks if all recorded kernels are still in the kernel cache
+    /// Checks if all recorded kernels are still in the kernel cache.
+    /// This might occur when calling dr.kernel_cache_flush between recording
+    /// the function and replaying it.
     bool check_kernel_cache();
 };
 
+/**
+ * \brief This struct is a wrapper arround a \ref ThreadState that records the
+ * operations performed with it.
+ */
 struct RecordThreadState : ThreadState {
 
     RecordThreadState(ThreadState *internal) {
@@ -426,6 +493,14 @@ struct RecordThreadState : ThreadState {
         return this->m_internal->reduce_expanded(vt, reduce_op, data, exp, size);
     }
 
+    /**
+     * This function is called every time a pointer is freed using \ref
+     * jitc_free. It reocords the operation and removes the mapping from that
+     * pointer to the recorded variable.
+     * If the pointer is reused later by another call to \ref jitc_malloc, the
+     * \ref RecordThreadState.add_variable function will create a new variable
+     * and mapping from the pointer to it.
+     */
     void notify_free(const void *ptr) override{
         if(has_variable(ptr)){
             jitc_log(LogLevel::Debug, "record(): jitc_free(ptr=%p)", ptr);
@@ -445,6 +520,10 @@ struct RecordThreadState : ThreadState {
     ~RecordThreadState() {
     }
 
+    /**
+     * Adds an input of the recording.
+     * This is adds the slot of that variable to the \ref Recording.inputs vector.
+     */
     void add_input(uint32_t input) {
         try {
             uint32_t input_index = this->m_recording.inputs.size();
@@ -463,6 +542,12 @@ struct RecordThreadState : ThreadState {
             record_exception();
         }
     }
+    /**
+     * Adds an output to the recording.
+     * The output can be seen as a final operaton, which also has to infer the
+     * size of it's input variables.
+     * Therefore, we record the full \ref ParamInfo for each output variable.
+     */
     void add_output(uint32_t output) {
         try {
             uint32_t output_index = this->m_recording.outputs.size();
@@ -497,6 +582,7 @@ struct RecordThreadState : ThreadState {
         return tmp;
     }
 
+    /// A helper scope, pausing recording.
     struct pause_scope {
         RecordThreadState *rts;
         bool tmp;
@@ -512,12 +598,16 @@ struct RecordThreadState : ThreadState {
         return pause_scope(this);
     }
 
+    /// Is recording paused or has an exception been thrown?
+    /// Recording any operation should be gated by this function.
     inline bool paused(){
         return m_paused || m_exception;
     }
 
-    inline void record_exception(){
-        if(!m_exception)
+    /// Records an exception, thrown while recording an operation.
+    /// This is necessary to gracefully fail finishing freezing the function.
+    inline void record_exception() {
+        if (!m_exception)
             m_exception = std::current_exception();
     }
 
@@ -541,6 +631,7 @@ private:
      */
     void record_expand(uint32_t index);
 
+    /// Record a kernel launch
     void record_launch(Kernel kernel, KernelKey *key, XXH128_hash_t hash,
                        uint32_t size, std::vector<void *> *kernel_params,
                        const std::vector<uint32_t> *kernel_param_ids);
@@ -558,6 +649,13 @@ private:
     void record_reduce_expanded(VarType vt, ReduceOp reduce_op, void *data,
                                 uint32_t exp, uint32_t size);
 
+    /**
+     * This captures the offset buffer of a vcall in a kernel.
+     * The offset buffer describes where in the data buffer of that vcall the
+     * variables or pointers to variables, for that vcall are stored.
+     * It should not change between invocations and we should therefore be able
+     * to capture it and reuse it when replaying the kernel.
+     */
     uint32_t capture_call_offset(const void *ptr, size_t dsize){
         uint32_t size;
         size = dsize / type_size[(uint32_t)VarType::UInt64];
@@ -600,6 +698,7 @@ private:
     /**
      * This function tries to capture a variable that is not known to the
      * recording threadstate.
+     * This is unsupported for now and raises an exception.
      */
     uint32_t capture_variable(uint32_t index, const void *ptr = nullptr,
                               bool remember = true, bool test_scope = true, bool overwrite = false) {
@@ -610,79 +709,19 @@ private:
             jitc_raise(
                 "record(): Variable r%u[%u] -> %p, label=%s, was created "
                 "before recording was started, but it was "
-                "not speciefied as an input variable!",
+                "not speciefied as an input variable! This can happen if a "
+                "input type is not fully traversavle, for example when not "
+                "specifying a member in DRJIT_STRUCT, but using it in the "
+                "frozen function.",
                 index, v->size, v->data, jitc_var_label(index));
         }
 
-        // Might make sense to limit the size of captured variables to 1.
-        // if (v->size > 1)
         jitc_raise("record(): Variable r%u[%u] -> %p, label=%s, data=%s, of "
                    "size > 1 was created while recording.",
                    index, v->size, v->data, jitc_var_label(index),
                    jitc_var_str(index));
 
         return 0;
-        /*
-        if (!ptr)
-            ptr = v->data;
-
-        // Have to copy the variable, so that it cannot be modified by other
-        // calls later.
-        jitc_log(LogLevel::Debug,
-                 "record(): capturing variable r%u, type=%s, data=%s", index,
-                 type_name[(uint32_t) v->type], jitc_var_str(index));
-
-        AllocType atype = backend == JitBackend::CUDA ? AllocType::Device
-                                                      : AllocType::HostAsync;
-        size_t dsize    = v->size * type_size[(uint32_t) v->type];
-
-        uint64_t *data = (uint64_t *) jitc_malloc(atype, dsize);
-        jitc_memcpy(backend, data, ptr, dsize);
-
-        uint32_t data_var = jitc_var_mem_map(backend, (VarType) v->type, data,
-                                             (size_t) v->size, 1);
-
-        RecordVariable rv;
-        rv.ptr = ptr;
-        rv.state = RecordVarState::Captured;
-        rv.init  = RecordVarInit::Captured;
-        rv.index = data_var;
-
-        // Add the frozen value to the ptr_to_slot map
-        // NOTE: this only works if we are using notify_free.
-        // But it could allow us to capture call offsets here.
-        uint32_t slot;
-        if(overwrite){
-            auto it = this->ptr_to_slot.find(ptr);
-
-            if (it == this->ptr_to_slot.end()) {
-                slot = this->recording.record_variables.size();
-
-                this->recording.record_variables.push_back(rv);
-
-                this->ptr_to_slot.insert({ ptr, slot });
-            } else {
-                slot = it.value();
-                jitc_log(LogLevel::Debug, "    overwriting at s%u", slot);
-                this->recording.record_variables[slot] = rv;
-            }
-        }
-        else{
-            slot = this->recording.record_variables.size();
-            this->recording.record_variables.push_back(rv);
-            if (remember) {
-                auto it = this->ptr_to_slot.find(ptr);
-                if (it == this->ptr_to_slot.end())
-                    this->ptr_to_slot.insert({ ptr, slot });
-                else
-                    it.value() = slot;
-            }
-        }
-
-        jitc_log(LogLevel::Debug, "    at slot s%u", slot);
-
-        return slot;
-        */
     }
 
     /**
@@ -732,8 +771,11 @@ private:
         return it != this->ptr_to_slot.end();
     }
 
+    /**
+     * Adds a parameter access to the \ref dependencies vector.
+     * This also modifies the state of the \ref RecordVariable that was accessed.
+     */
     void add_param(ParamInfo info) {
-        
         RecordVariable &rv = this->m_recording.record_variables[info.slot];
         if (info.type == ParamType::Output){
 
@@ -761,6 +803,7 @@ private:
         
         this->m_recording.dependencies.push_back(info);
     }
+    /// Helper function for recording input parameters given the slot.
     void add_in_param(uint32_t slot, bool test_uninit = true) {
         ParamInfo info;
         info.type = ParamType::Input;
@@ -768,10 +811,12 @@ private:
         info.test_uninit = test_uninit;
         add_param(info);
     }
+    /// Helper function recording input access given the pointer.
     void add_in_param(const void *ptr, bool test_uninit = true){
         uint32_t slot = this->get_variable(ptr);
         add_in_param(slot, test_uninit);
     }
+    /// Helper function recording an output access, given the slot and \ref VarType
     void add_out_param(uint32_t slot, VarType vtype) {
         ParamInfo info;
         info.type = ParamType::Output;
@@ -779,11 +824,14 @@ private:
         info.vtype = vtype;
         add_param(info);
     }
+    /// Helper function recording an output access, given the pointer and \ref VarType
     void add_out_param(const void *ptr, VarType vtype){
         RecordVariable rv;
         uint32_t slot = this->add_variable(ptr, rv);
         add_out_param(slot, vtype);
     }
+    /// Helper function recording an output access, given the pointer and the
+    /// uint32_t representation of a \ref VarType
     void add_out_param(uint32_t slot, uint32_t vtype) {
         add_out_param(slot, (VarType)vtype);
     }
