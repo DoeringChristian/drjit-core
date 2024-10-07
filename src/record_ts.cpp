@@ -803,7 +803,15 @@ void RecordThreadState::record_launch(Kernel kernel, KernelKey *key, XXH128_hash
     size_t input_size = 0;
     size_t ptr_size   = 0;
 
-    // Handle reduce_expanded case
+    // Handle reduce_expanded case.
+    // Reductions in LLVM might be split into three operations.
+    // First the variable is expanded by its size times the number of workers +
+    // 1 Then the kernel writes into the expanded variable with some offset, and
+    // finally the variable is reduced.
+    // The expand operation allocates a new memory region and copies the old
+    // content into it.
+    // We catch this case if the input variable of a kernel has a reduce_op
+    // asociated with it.
     for (uint32_t param_index = 0; param_index < kernel_param_ids->size();
          param_index++) {
         uint32_t index       = kernel_param_ids->at(param_index);
@@ -923,6 +931,9 @@ void RecordThreadState::record_launch(Kernel kernel, KernelKey *key, XXH128_hash
     op.kernel.key->flags  = key->flags;
 
     op.size = size;
+
+    // If this kernel uses optix, we have to copy the shader binding table for
+    // replaying
     if (uses_optix) {
         op.uses_optix = true;
 
