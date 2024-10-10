@@ -174,7 +174,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
     for (uint32_t i = 0; i < this->inputs.size(); ++i) {
         Variable *input_variable = jitc_var(replay_inputs[i]);
         replay_variables[this->inputs[i]].init_from_input(input_variable);
-        jitc_log(LogLevel::Debug, "    input %u: r%u mapped to slot(%u)", i,
+        jitc_log(LogLevel::Debug, "    input %u: r%u mapped to slot s%u", i,
                  replay_inputs[i], this->inputs[i]);
     }
 
@@ -695,25 +695,25 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
     ProfilerPhase profiler(pr_output);
     // Create output variables
+    jitc_log(LogLevel::Debug, "replay(): creating outputs");
     for (uint32_t i = 0; i < this->outputs.size(); ++i) {
         ParamInfo info = this->outputs[i];
         uint32_t slot = info.slot;
         // uint32_t index = this->outputs[i];
-        jitc_log(LogLevel::Debug, "replay(): output(%u, slot=%u)", i, slot);
         ReplayVariable &rv = replay_variables[slot];
         // if (rv.type != info.vtype)
         //     rv.prepare_input(info.vtype);
 
         if (rv.init == RecordVarInit::Input) {
             // Use input variable
-            jitc_log(LogLevel::Debug, "    uses input %u", rv.index);
+            jitc_log(LogLevel::Debug, "    output %u: from slot s%u = input[%u]", i, slot, rv.index);
             jitc_assert(rv.data, "replay(): freed an input variable "
                                  "that is passed through!");
             uint32_t var_index = replay_inputs[rv.index];
             jitc_var_inc_ref(var_index);
             outputs[i] = var_index;
         } else if (rv.init == RecordVarInit::Captured) {
-            jitc_log(LogLevel::Info, "    uses captured variable %u", rv.index);
+            jitc_log(LogLevel::Debug, "    output %u: from slot s%u = captured[%u]", i, slot, rv.index);
             jitc_assert(rv.data, "replay(): freed an input variable "
                                  "that is passed through!");
 
@@ -721,7 +721,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
             outputs[i] = rv.index;
         } else {
-            jitc_log(LogLevel::Info, "    uses internal variable");
+            jitc_log(LogLevel::Debug, "    output %u: from slot s%u", i, slot);
             if(!rv.data)
                 jitc_fail("replay(): freed slot %u used for output.", slot);
             outputs[i] = jitc_var_mem_map(this->backend, info.vtype, rv.data,
@@ -729,7 +729,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
         }
         // Set data to nullptr for next step, where we free all remaining
         // temporary variables
-        jitc_log(LogLevel::Info, "    data=%p", rv.data);
+        jitc_log(LogLevel::Info, "    r%u", outputs[i]);
         rv.data = nullptr;
     }
 
