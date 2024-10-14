@@ -76,7 +76,7 @@ struct Operation {
     /// Weather this operation is enabled. We might have to disable some
     /// operations after the fact, and removing them from the Recording would be
     /// more complicated.
-    bool enabled    = true;
+    bool enabled = true;
     /// Does this operation use optix?
     bool uses_optix = false;
     /// A copy of the shader binding table, used by the kernel.
@@ -99,9 +99,8 @@ enum class RecordVarState {
     Captured,
 };
 
-
 /// Records how this variable was initialized
-enum class RecordVarInit{
+enum class RecordVarInit {
     None,
     Captured,
     Input,
@@ -126,8 +125,7 @@ struct RecordVariable {
     /// Tracks the pointer of the variable for debug purposes
     const void *ptr;
 
-    RecordVariable() {
-    }
+    RecordVariable() {}
 
     /**
      * Not all information about variables might be known right away (see
@@ -139,9 +137,9 @@ struct RecordVariable {
             this->state = rhs.state;
             this->index = rhs.index;
         }
-        if(rhs.last_memcpy)
+        if (rhs.last_memcpy)
             this->last_memcpy = rhs.last_memcpy;
-        if(rhs.last_memset)
+        if (rhs.last_memset)
             this->last_memset = rhs.last_memset;
         return *this;
     }
@@ -151,20 +149,22 @@ struct RecordVariable {
  * This represents how a variable is accessed by an operation.
  */
 struct ParamInfo {
-    /// References the variable in \ref Recording.record_variables that is accessed.
+    /// References the variable in \ref Recording.record_variables that is
+    /// accessed.
     uint32_t slot;
     /// Records how the variable was accessed i.e. was it the output or input
     /// of/to a kernel.
-    ParamType type      = ParamType::Input;
+    ParamType type = ParamType::Input;
     /// The variable type as which the access occured. Different operations
     /// might reinterpret the same allocation as different types this changes
     /// the inferred launch size of the operation.
     /// For example, a memcpy operation interprets the allocation as `UInt8`
     /// types, whereas a kernel interprets it as `UInt64`.
-    VarType vtype       = VarType::Void;
+    VarType vtype = VarType::Void;
     /// Was this allocation accessed through a pointer?
     bool pointer_access = false;
-    /// Should the next input operation fail, if the variable is still uninitialized?
+    /// Should the next input operation fail, if the variable is still
+    /// uninitialized?
     bool test_uninit = true;
     struct {
         /// Represents the offset of that parameter for aggregate operations.
@@ -176,13 +176,10 @@ struct ParamInfo {
         int32_t type_size;
     } extra;
 
-    ParamInfo() {
-    }
-    ParamInfo(uint32_t index, VarType vtype) : slot(index), vtype(vtype) {
-    }
+    ParamInfo() {}
+    ParamInfo(uint32_t index, VarType vtype) : slot(index), vtype(vtype) {}
     ParamInfo(uint32_t index, uint32_t vtype)
-        : slot(index), vtype((VarType)vtype) {
-    }
+        : slot(index), vtype((VarType) vtype) {}
 };
 
 /**
@@ -222,7 +219,7 @@ struct Recording {
     /// same size as the number of inputs and outputs with which the frozen
     /// function was recorded.
     int replay(const uint32_t *replay_input, uint32_t *outputs);
-    
+
     /// Counter, counting the number of kernels for debugging.
     uint32_t n_kernels = 0;
 
@@ -242,23 +239,23 @@ struct Recording {
 struct RecordThreadState : ThreadState {
 
     RecordThreadState(ThreadState *internal) {
-        this->context = internal->context;
-        this->stream = internal->stream;
-        this->event = internal->event;
-        this->sync_stream_event = internal->sync_stream_event;
-        this->device = internal->device;
+        this->context            = internal->context;
+        this->stream             = internal->stream;
+        this->event              = internal->event;
+        this->sync_stream_event  = internal->sync_stream_event;
+        this->device             = internal->device;
         this->compute_capability = internal->compute_capability;
-        this->ptx_version = internal->ptx_version;
-        this->memory_pool = internal->memory_pool;
+        this->ptx_version        = internal->ptx_version;
+        this->memory_pool        = internal->memory_pool;
 
-        this->backend = internal->backend;
-        this->scope = internal->scope;
+        this->backend         = internal->backend;
+        this->scope           = internal->scope;
         this->call_self_value = internal->call_self_value;
         this->call_self_index = internal->call_self_index;
 
 #if defined(DRJIT_ENABLE_OPTIX)
         this->optix_pipeline = internal->optix_pipeline;
-        this->optix_sbt = internal->optix_sbt;
+        this->optix_sbt      = internal->optix_sbt;
 #endif
 
         this->m_internal = internal;
@@ -273,7 +270,7 @@ struct RecordThreadState : ThreadState {
             uint32_t start = this->m_recording.dependencies.size();
 
             Operation op;
-            op.type = OpType::Barrier;
+            op.type             = OpType::Barrier;
             op.dependency_range = std::pair(start, start);
             this->m_recording.operations.push_back(op);
         }
@@ -287,14 +284,15 @@ struct RecordThreadState : ThreadState {
                  const std::vector<uint32_t> *kernel_param_ids) override {
         if (!paused()) {
             try {
-                record_launch(kernel, key, hash, size, kernel_params, kernel_param_ids);
+                record_launch(kernel, key, hash, size, kernel_params,
+                              kernel_param_ids);
             } catch (...) {
                 record_exception();
             }
         }
         scoped_pause();
         return this->m_internal->launch(kernel, key, hash, size, kernel_params,
-                                      kernel_param_ids);
+                                        kernel_param_ids);
     }
 
     /// Fill a device memory region with constants of a given type
@@ -387,9 +385,8 @@ struct RecordThreadState : ThreadState {
 
     /// Perform a synchronous copy operation
     void memcpy(void *dst, const void *src, size_t size) override {
-        jitc_log(LogLevel::Debug,
-                 "record(): memcpy(dst=%p, src=%p, size=%zu)", dst,
-                 src, size);
+        jitc_log(LogLevel::Debug, "record(): memcpy(dst=%p, src=%p, size=%zu)",
+                 dst, src, size);
         scoped_pause();
         return this->m_internal->memcpy(dst, src, size);
     }
@@ -397,8 +394,8 @@ struct RecordThreadState : ThreadState {
     /// Perform an assynchronous copy operation
     void memcpy_async(void *dst, const void *src, size_t size) override {
         jitc_log(LogLevel::Debug,
-                 "record(): memcpy_async(dst=%p, src=%p, size=%zu)", dst,
-                 src, size);
+                 "record(): memcpy_async(dst=%p, src=%p, size=%zu)", dst, src,
+                 size);
         bool has_var = has_variable(src);
         if (!paused() && (has_var)) {
 
@@ -425,7 +422,7 @@ struct RecordThreadState : ThreadState {
             scoped_pause();
             this->m_internal->memcpy_async(dst, src, size);
         }
-        if(!paused() && !has_var){
+        if (!paused() && !has_var) {
             // If we did not know the source variable, this memcpy might be
             // coming from a `jitc_call_upload` call.
             // If that is the case, we have to capture the offset buffer.
@@ -439,7 +436,7 @@ struct RecordThreadState : ThreadState {
                     break;
                 }
             }
-            if(call){
+            if (call) {
                 capture_call_offset(dst, size);
                 jitc_log(LogLevel::Debug, "    captured call offset");
             }
@@ -453,7 +450,7 @@ struct RecordThreadState : ThreadState {
                                  "unsupported function recording!");
         scoped_pause();
         return this->m_internal->block_reduce(type, op, in, size, block_size,
-                                            out);
+                                              out);
     }
 
     /// Compute a dot product of two equal-sized arrays
@@ -504,7 +501,8 @@ struct RecordThreadState : ThreadState {
             }
         }
         scoped_pause();
-        return this->m_internal->reduce_expanded(vt, reduce_op, data, exp, size);
+        return this->m_internal->reduce_expanded(vt, reduce_op, data, exp,
+                                                 size);
     }
 
     /**
@@ -515,28 +513,28 @@ struct RecordThreadState : ThreadState {
      * \ref RecordThreadState.add_variable function will create a new variable
      * and mapping from the pointer to it.
      */
-    void notify_free(const void *ptr) override{
-        if(has_variable(ptr)){
+    void notify_free(const void *ptr) override {
+        if (has_variable(ptr)) {
             jitc_log(LogLevel::Debug, "record(): jitc_free(ptr=%p)", ptr);
-            
+
             uint32_t start = this->m_recording.dependencies.size();
             add_in_param(ptr, false);
             uint32_t end = this->m_recording.dependencies.size();
 
             Operation op;
-            op.type = OpType::Free;
+            op.type             = OpType::Free;
             op.dependency_range = std::pair(start, end);
 
             this->ptr_to_slot.erase(ptr);
         }
     }
 
-    ~RecordThreadState() {
-    }
+    ~RecordThreadState() {}
 
     /**
      * Adds an input of the recording.
-     * This is adds the slot of that variable to the \ref Recording.inputs vector.
+     * This is adds the slot of that variable to the \ref Recording.inputs
+     * vector.
      */
     void add_input(uint32_t input) {
         try {
@@ -565,7 +563,7 @@ struct RecordThreadState : ThreadState {
     void add_output(uint32_t output) {
         try {
             uint32_t output_index = this->m_recording.outputs.size();
-            Variable *v = jitc_var(output);
+            Variable *v           = jitc_var(output);
             uint32_t slot;
             if (!has_variable(v->data)) {
                 slot = capture_variable(output);
@@ -574,11 +572,11 @@ struct RecordThreadState : ThreadState {
             }
 
             jitc_log(LogLevel::Trace,
-                     "record(): Adding variable %u output %u to slot s%u", output,
-                     output_index, slot);
+                     "record(): Adding variable %u output %u to slot s%u",
+                     output, output_index, slot);
             ParamInfo info;
-            info.slot = slot;
-            info.vtype = (VarType)v->type;
+            info.slot  = slot;
+            info.vtype = (VarType) v->type;
             this->m_recording.outputs.push_back(info);
         } catch (...) {
             record_exception();
@@ -601,22 +599,15 @@ struct RecordThreadState : ThreadState {
         RecordThreadState *rts;
         bool tmp;
 
-        pause_scope(RecordThreadState *rts) : rts(rts), tmp(rts->pause()) {
-        }
-        ~pause_scope() {
-            rts->m_paused = tmp;
-        }
+        pause_scope(RecordThreadState *rts) : rts(rts), tmp(rts->pause()) {}
+        ~pause_scope() { rts->m_paused = tmp; }
     };
 
-    pause_scope scoped_pause() {
-        return pause_scope(this);
-    }
+    pause_scope scoped_pause() { return pause_scope(this); }
 
     /// Is recording paused or has an exception been thrown?
     /// Recording any operation should be gated by this function.
-    inline bool paused(){
-        return m_paused || m_exception;
-    }
+    inline bool paused() { return m_paused || m_exception; }
 
     /// Records an exception, thrown while recording an operation.
     /// This is necessary to gracefully fail finishing freezing the function.
@@ -667,8 +658,8 @@ private:
                            uint32_t size, void *out);
     void record_compress(const uint8_t *in, uint32_t size, uint32_t *out);
     void record_mkperm(const uint32_t *values, uint32_t size,
-                           uint32_t bucket_count, uint32_t *perm,
-                           uint32_t *offsets);
+                       uint32_t bucket_count, uint32_t *perm,
+                       uint32_t *offsets);
     void record_aggregate(void *dst, AggregationEntry *agg, uint32_t size);
     void record_reduce_expanded(VarType vt, ReduceOp reduce_op, void *data,
                                 uint32_t exp, uint32_t size);
@@ -680,24 +671,24 @@ private:
      * It should not change between invocations and we should therefore be able
      * to capture it and reuse it when replaying the kernel.
      */
-    uint32_t capture_call_offset(const void *ptr, size_t dsize){
+    uint32_t capture_call_offset(const void *ptr, size_t dsize) {
         uint32_t size;
-        size = dsize / type_size[(uint32_t)VarType::UInt64];
-        
+        size = dsize / type_size[(uint32_t) VarType::UInt64];
+
         AllocType atype = backend == JitBackend::CUDA ? AllocType::Device
                                                       : AllocType::HostAsync;
-        uint64_t *data = (uint64_t *) jitc_malloc(atype, dsize);
+        uint64_t *data  = (uint64_t *) jitc_malloc(atype, dsize);
         jitc_memcpy(backend, data, ptr, dsize);
 
         uint32_t data_var =
             jitc_var_mem_map(backend, VarType::UInt64, data, size, true);
-        
+
         RecordVariable rv;
-        rv.ptr = ptr;
+        rv.ptr   = ptr;
         rv.state = RecordVarState::Captured;
         rv.init  = RecordVarInit::Captured;
         rv.index = data_var;
-        
+
         uint32_t slot;
         auto it = this->ptr_to_slot.find(ptr);
         if (it == this->ptr_to_slot.end()) {
@@ -707,9 +698,9 @@ private:
 
             this->ptr_to_slot.insert({ ptr, slot });
         } else {
-            slot = it.value();
+            slot                = it.value();
             RecordVariable &old = this->m_recording.record_variables[slot];
-            if(old.init != RecordVarInit::None)
+            if (old.init != RecordVarInit::None)
                 jitc_fail("record(): Tried to overwrite a initialized variable "
                           "with an offset buffer!");
 
@@ -725,7 +716,8 @@ private:
      * This is unsupported for now and raises an exception.
      */
     uint32_t capture_variable(uint32_t index, const void *ptr = nullptr,
-                              bool remember = true, bool test_scope = true, bool overwrite = false) {
+                              bool remember = true, bool test_scope = true,
+                              bool overwrite = false) {
 
         scoped_pause();
         Variable *v = jitc_var(index);
@@ -756,7 +748,7 @@ private:
      */
     uint32_t add_variable(const void *ptr, RecordVariable rv) {
 
-        rv.ptr = ptr;
+        rv.ptr  = ptr;
         auto it = this->ptr_to_slot.find(ptr);
 
         if (it == this->ptr_to_slot.end()) {
@@ -764,7 +756,7 @@ private:
 
             this->m_recording.record_variables.push_back(rv);
 
-            this->ptr_to_slot.insert({ptr, slot});
+            this->ptr_to_slot.insert({ ptr, slot });
 
             return slot;
         } else {
@@ -781,7 +773,7 @@ private:
     uint32_t get_variable(const void *ptr) {
         auto it = this->ptr_to_slot.find(ptr);
 
-        if(it == this->ptr_to_slot.end())
+        if (it == this->ptr_to_slot.end())
             jitc_fail("Failed to find the slot corresponding to the variable "
                       "with data at %p",
                       ptr);
@@ -797,59 +789,61 @@ private:
 
     /**
      * Adds a parameter access to the \ref dependencies vector.
-     * This also modifies the state of the \ref RecordVariable that was accessed.
+     * This also modifies the state of the \ref RecordVariable that was
+     * accessed.
      */
     void add_param(ParamInfo info) {
         RecordVariable &rv = this->m_recording.record_variables[info.slot];
-        if (info.type == ParamType::Output){
+        if (info.type == ParamType::Output) {
 
             jitc_log(LogLevel::Debug, " <- param s%u", info.slot);
-            
-            if(info.vtype != VarType::Void)
+
+            if (info.vtype != VarType::Void)
                 rv.type = info.vtype;
-            
+
             rv.state = RecordVarState::OpOutput;
-            
-        }else if (info.type == ParamType::Input){
-            
+
+        } else if (info.type == ParamType::Input) {
+
             jitc_log(LogLevel::Debug, " -> param s%u", info.slot);
-            
-            if(info.test_uninit && rv.state == RecordVarState::Uninit)
+
+            if (info.test_uninit && rv.state == RecordVarState::Uninit)
                 jitc_fail("record(): Varaible at slot s%u was read from by "
                           "operation o%u, but has not yet been initialized!",
                           info.slot,
                           (uint32_t) this->m_recording.operations.size());
-            
+
             if (info.vtype == VarType::Void)
                 info.vtype = rv.type;
-            
         }
-        
+
         this->m_recording.dependencies.push_back(info);
     }
     /// Helper function for recording input parameters given the slot.
     void add_in_param(uint32_t slot, bool test_uninit = true) {
         ParamInfo info;
-        info.type = ParamType::Input;
-        info.slot = slot;
+        info.type        = ParamType::Input;
+        info.slot        = slot;
         info.test_uninit = test_uninit;
         add_param(info);
     }
     /// Helper function recording input access given the pointer.
-    void add_in_param(const void *ptr, bool test_uninit = true){
+    void add_in_param(const void *ptr, bool test_uninit = true) {
         uint32_t slot = this->get_variable(ptr);
         add_in_param(slot, test_uninit);
     }
-    /// Helper function recording an output access, given the slot and \ref VarType
+    /// Helper function recording an output access, given the slot and \ref
+    /// VarType
     void add_out_param(uint32_t slot, VarType vtype) {
         ParamInfo info;
-        info.type = ParamType::Output;
-        info.slot = slot;
+        info.type  = ParamType::Output;
+        info.slot  = slot;
         info.vtype = vtype;
         add_param(info);
     }
-    /// Helper function recording an output access, given the pointer and \ref VarType
-    void add_out_param(const void *ptr, VarType vtype){
+    /// Helper function recording an output access, given the pointer and \ref
+    /// VarType
+    void add_out_param(const void *ptr, VarType vtype) {
         RecordVariable rv;
         uint32_t slot = this->add_variable(ptr, rv);
         add_out_param(slot, vtype);
@@ -857,7 +851,7 @@ private:
     /// Helper function recording an output access, given the pointer and the
     /// uint32_t representation of a \ref VarType
     void add_out_param(uint32_t slot, uint32_t vtype) {
-        add_out_param(slot, (VarType)vtype);
+        add_out_param(slot, (VarType) vtype);
     }
 };
 
