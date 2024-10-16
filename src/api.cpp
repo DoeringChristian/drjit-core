@@ -610,6 +610,11 @@ size_t jit_var_size(uint32_t index) {
     return (size_t) jitc_var(index)->size;
 }
 
+uint32_t jit_var_width(JitBackend backend) {
+    lock_guard guard(state.lock);
+    return jitc_var_width(backend);
+}
+
 VarState jit_var_state(uint32_t index) {
     if (index == 0)
         return VarState::Invalid;

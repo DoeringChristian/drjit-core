@@ -330,6 +330,10 @@ template <JitBackend Backend_, typename Value_> struct JitArray {
             jit_var_counter(Backend, size));
     }
 
+    static JitArray<Backend_, uint32_t> kernel_width() {
+        return JitArray<Backend_, uint32_t>::steal(jit_var_width(Backend));
+    }
+
     // ------------------------------------------------------
 
     friend JitArray abs(const JitArray &v) {

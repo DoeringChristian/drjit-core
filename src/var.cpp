@@ -869,6 +869,15 @@ uint32_t jitc_var_counter(JitBackend backend, size_t size,
     return jitc_var_new(v);
 }
 
+uint32_t jitc_var_width(JitBackend backend) {
+    Variable v;
+    v.kind = (uint32_t) VarKind::Width;
+    v.backend = (uint32_t) backend;
+    v.type = (uint32_t) VarType::UInt32;
+    v.size = (uint32_t) 1;
+    return jitc_var_new(v);
+}
+
 uint32_t jitc_var_call_input(uint32_t index) {
     if (index == 0)
         jitc_raise("jit_var_call_input(): invoked with an "

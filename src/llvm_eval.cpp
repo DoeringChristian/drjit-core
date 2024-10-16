@@ -938,6 +938,10 @@ static void jitc_llvm_render(Variable *v) {
                 v, v, v, v, v, v, v, v, v, v, v, jitc_llvm_u32_arange_str);
             break;
 
+        case VarKind::Width:
+            fmt("    $v = trunc i64 %index to $t\n", v, v);
+            break;
+
         case VarKind::DefaultMask:
             fmt("    $v_0 = trunc i64 %end to i32\n"
                 "    $v_1 = insertelement <$w x i32> undef, i32 $v_0, i32 0\n"
