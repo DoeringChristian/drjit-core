@@ -776,6 +776,10 @@ static void jitc_cuda_render(Variable *v) {
             fmt("    mov.$b $v, %r0;\n", v, v);
             break;
 
+        case VarKind::Width:
+            fmt("    mov.$b $v, %r2;\n", v, v);
+            break;
+
         case VarKind::Call:
             jitc_var_call_assemble((CallData *) v->data, v->reg_index,
                                    a0->reg_index, a1->reg_index, a2->reg_index,

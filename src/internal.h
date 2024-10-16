@@ -166,6 +166,9 @@ enum class VarKind : uint32_t {
     // Write an element to a variable array
     ArrayWrite,
 
+    // Width node to determine the current kernel width
+    Width,
+
     // Denotes the number of different node types
     Count
 };

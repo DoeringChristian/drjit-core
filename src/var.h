@@ -39,6 +39,9 @@ extern uint32_t jitc_var_u32(JitBackend backend, uint32_t value);
 extern uint32_t jitc_var_counter(JitBackend backend, size_t size,
                                  bool simplify_scalar);
 
+/// Create a variable representing the width of the current kernel
+extern uint32_t jitc_var_width(JitBackend backend);
+
 /// Create a new IR node. Just a wrapper around jitc_var_new without any error checking
 extern uint32_t jitc_var_new_node_0(JitBackend backend, VarKind kind,
                                     VarType vt, uint32_t size, bool symbolic,
