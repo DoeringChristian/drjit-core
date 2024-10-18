@@ -4,8 +4,8 @@
 #include "eval.h"
 #include "internal.h"
 #include "log.h"
-#include "var.h"
 #include "profile.h"
+#include "var.h"
 
 const char *op_type_name[(int) OpType::Count]{
     "Barrier",        "KernelLaunch",      "MemsetAsync", "Expand",
@@ -36,28 +36,26 @@ struct ReplayVariable {
         if (init == RecordVarInit::Captured) {
             // copy the variable, so that it isn't changed
             this->index = jitc_var_copy(this->index);
-            
-            Variable *v = jitc_var(this->index);
-            this->data = v->data;
+
+            Variable *v      = jitc_var(this->index);
+            this->data       = v->data;
             this->alloc_size = v->size * type_size[v->type];
-            this->data_size = this->alloc_size;
+            this->data_size  = this->alloc_size;
         }
     }
 
     /// Initializes the \ref ReplayVariable from a function input.
-    void init_from_input(Variable *input_variable){
+    void init_from_input(Variable *input_variable) {
         this->data = input_variable->data;
-        this->alloc_size = type_size[input_variable->type] * input_variable->size;
+        this->alloc_size =
+            type_size[input_variable->type] * input_variable->size;
         this->data_size = this->alloc_size;
     }
-
 
     /**
      * Calculate the number of elements given some variable type.
      */
-    uint32_t size(VarType vtype){
-        return size(type_size[(uint32_t)vtype]);
-    }
+    uint32_t size(VarType vtype) { return size(type_size[(uint32_t) vtype]); }
     /**
      * Calculate the number of elements given some type size.
      * This depends on how an operation accesses a variable.
@@ -67,27 +65,27 @@ struct ReplayVariable {
      * This changes the size of the variable when inferring the size of the
      * kernel launch.
      */
-    uint32_t size(uint32_t tsize){
+    uint32_t size(uint32_t tsize) {
         if (tsize == 0)
             jitc_fail("replay(): Invalid var type!");
-        size_t size = (this->data_size / (size_t)tsize);
+        size_t size = (this->data_size / (size_t) tsize);
 
         if (size == 0)
             jitc_fail("replay(): Error, determining size of variable! init "
                       "%u, dsize=%zu",
                       (uint32_t) this->init, this->data_size);
 
-        if(size * (size_t)tsize != this->data_size)
+        if (size * (size_t) tsize != this->data_size)
             jitc_fail("replay(): Error, determining size of variable!");
 
-        return (uint32_t)size;
+        return (uint32_t) size;
     }
 
     void alloc(JitBackend backend, uint32_t size, VarType type) {
         alloc(backend, size, type_size[(uint32_t) type]);
     }
-    void alloc(JitBackend backend, uint32_t size, uint32_t isize){
-        size_t dsize = ((size_t)size) * ((size_t)isize);
+    void alloc(JitBackend backend, uint32_t size, uint32_t isize) {
+        size_t dsize = ((size_t) size) * ((size_t) isize);
         return alloc(backend, dsize);
     }
     /**
@@ -120,10 +118,10 @@ struct ReplayVariable {
         this->data_size = dsize;
     }
 
-    void free(){
+    void free() {
         jitc_free(this->data);
-        this->data = nullptr;
-        this->data_size = 0;
+        this->data       = nullptr;
+        this->data_size  = 0;
         this->alloc_size = 0;
     }
 };
@@ -186,522 +184,548 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
             continue;
 
         switch (op.type) {
-        case OpType::KernelLaunch: {
-            ProfilerPhase profiler(pr_kernel_launch);
+            case OpType::KernelLaunch: {
+                ProfilerPhase profiler(pr_kernel_launch);
 
-            // Test if this kernel is still in the cache
-            auto it = state.kernel_cache.find(
-                *op.kernel.key, KernelHash::compute_hash(op.kernel.hash.high64,
-                                                         op.kernel.key->device,
-                                                         op.kernel.key->flags));
-            if(it == state.kernel_cache.end())
-                jitc_raise("replay(): Freezing functions relies on the kernel "
-                           "cache. It looks like this has been cleared since "
-                           "recording the function.");
+                // Test if this kernel is still in the cache
+                auto it = state.kernel_cache.find(
+                    *op.kernel.key,
+                    KernelHash::compute_hash(op.kernel.hash.high64,
+                                             op.kernel.key->device,
+                                             op.kernel.key->flags));
+                if (it == state.kernel_cache.end())
+                    jitc_raise(
+                        "replay(): Freezing functions relies on the kernel "
+                        "cache. It looks like this has been cleared since "
+                        "recording the function.");
 
-            jitc_log(LogLevel::Debug, "replay(): launching kernel %u %016llx",
-                     n_kernels++, (unsigned long long) op.kernel.hash.high64);
+                jitc_log(LogLevel::Debug,
+                         "replay(): launching kernel %u %016llx", n_kernels++,
+                         (unsigned long long) op.kernel.hash.high64);
 
-            // Reconstruct the \ref kernel_params for this launch given the
-            // allocations when replaying.
-            kernel_params.clear();
+                // Reconstruct the \ref kernel_params for this launch given the
+                // allocations when replaying.
+                kernel_params.clear();
 
-            if (backend == JitBackend::CUDA) {
-                // First parameter contains kernel size.
-                // Assigned later.
-                kernel_params.push_back(nullptr);
-            } else {
-                // First 3 parameters reserved for: kernel ptr, size, ITT
-                // identifier
-                for (int i = 0; i < 3; ++i)
+                if (backend == JitBackend::CUDA) {
+                    // First parameter contains kernel size.
+                    // Assigned later.
                     kernel_params.push_back(nullptr);
-            }
-
-            // Infer kernel launch size
-
-            // We first infer the size of the input variable, given how they are
-            // accessed by the kernel (i.e. as what type).
-            // While doing this, we also record the maximum size of variables
-            // accessd directly and through pointers separately.
-            // This will then be used when infering the kernel launch size.
-
-            jitc_log(LogLevel::Debug, "replay(): inferring kernel launch size");
-
-            // Size of direct input variables
-            uint32_t input_size = 0;
-            // Size of variables referenced by pointers
-            uint32_t ptr_size = 0;
-
-            for (uint32_t j = op.dependency_range.first;
-                 j < op.dependency_range.second; ++j) {
-                ParamInfo info = this->dependencies[j];
-                ReplayVariable &rv = replay_variables[info.slot];
-
-                if (info.type == ParamType::Input) {
-                    jitc_log(LogLevel::Debug, "infering size of s%u", info.slot);
-                    uint32_t size = rv.size(info.vtype);
-                    jitc_log(LogLevel::Debug, "    size=%u", size);
-
-                    if(rv.data == nullptr && !dry_run)
-                        jitc_fail("replay(): Kernel input variable (slot=%u) "
-                                  "not allocated!",
-                                  info.slot);
-
-                    if (!info.pointer_access)
-                        input_size = std::max(input_size, size);
-                    else
-                        ptr_size = std::max(ptr_size, size);
-                }
-            }
-
-            // Given the maximum size of the input variables (accessed directly
-            // and through pointers) we can infer the kernel launch size.
-            // We assume that the launch size is either a multiple of the
-            // maximum input variable (directly accessed) or if the kernel has
-            // no direct input variable, a multiple or fraction of the largest
-            // variable accessed through a pointer.
-            // If the launch size could not be inferred, we use the recorded
-            // size.
-
-            uint32_t launch_size = 0;
-            if (op.input_size > 0) {
-                launch_size = input_size != 0 ? input_size : ptr_size;
-                // Apply the factor
-                if (op.size > op.input_size && (op.size % op.input_size == 0)) {
-                    if (op.size % op.input_size != 0)
-                        jitc_raise(
-                            "replay(): Could not infer launch size, using "
-                            "heuristic!");
-                    size_t ratio = op.size / op.input_size;
-                    jitc_log(LogLevel::Debug,
-                             "replay(): Inferring launch size by heuristic, "
-                             "launch_size=%u, ratio=%zu",
-                             launch_size, ratio);
-                    launch_size = launch_size * ratio;
-                } else if (op.input_size % op.size == 0) {
-                    if (op.input_size % op.size != 0)
-                        jitc_raise(
-                            "replay(): Could not infer launch size, using "
-                            "heuristic!");
-
-                    uint32_t fraction = op.input_size / op.size;
-                    jitc_log(LogLevel::Debug,
-                             "replay(): Inferring launch size by heuristic, "
-                             "launch_size(%u), fraction=%u",
-                             launch_size, fraction);
-                    launch_size = launch_size / fraction;
-                }
-            }
-            if (launch_size == 0) {
-                jitc_log(LogLevel::Debug, "replay(): Could not infer launch "
-                                         "size, using recorded size");
-                launch_size = op.size;
-            }
-
-            // Allocate output variables for kernel launch.
-            // The assumption here is that for every kernel launch, the inputs
-            // are already allocated. Therefore we only allocate output
-            // variables, which have the same size as the kernel.
-            for (uint32_t j = op.dependency_range.first;
-                 j < op.dependency_range.second; ++j) {
-                ParamInfo info = this->dependencies[j];
-                ReplayVariable &rv = replay_variables[info.slot];
-
-                if (info.type == ParamType::Input) {
-                    uint32_t size = rv.size(info.vtype);
-                    jitc_log(LogLevel::Info,
-                             " -> param slot(%u, is_pointer=%u, size=%u)",
-                             info.slot, info.pointer_access, size);
-                    if(rv.init == RecordVarInit::Captured){
-                        jitc_log(LogLevel::Debug, "    label=%s",
-                                 jitc_var_label(rv.index));
-                        jitc_log(LogLevel::Debug, "    data=%s",
-                                 jitc_var_str(rv.index));
-                    }
                 } else {
-                    jitc_log(LogLevel::Info,
-                             " <- param slot(%u, is_pointer=%u)", info.slot,
-                             info.pointer_access);
+                    // First 3 parameters reserved for: kernel ptr, size, ITT
+                    // identifier
+                    for (int i = 0; i < 3; ++i)
+                        kernel_params.push_back(nullptr);
                 }
 
-                if (info.type == ParamType::Output) {
-                    rv.alloc(backend, launch_size, info.vtype);
-                }
-                jitc_log(LogLevel::Info, "    data=%p", rv.data);
-                jitc_assert(
-                    rv.data != nullptr || dry_run,
-                    "replay(): Encountered nullptr in kernel parameters.");
-                kernel_params.push_back(rv.data);
-            }
+                // Infer kernel launch size
 
-            // Change kernel size in `kernel_params`
-            if (backend == JitBackend::CUDA) {
-                uintptr_t size = 0;
-                std::memcpy(&size, &launch_size, sizeof(uint32_t));
-                kernel_params[0] = (void *)size;
-            }
+                // We first infer the size of the input variable, given how they
+                // are accessed by the kernel (i.e. as what type). While doing
+                // this, we also record the maximum size of variables accessd
+                // directly and through pointers separately. This will then be
+                // used when infering the kernel launch size.
 
-            if (!dry_run) {
-                jitc_log(LogLevel::Info, "    launch_size=%u, uses_optix=%u",
-                         launch_size, op.uses_optix);
-                std::vector<uint32_t> kernel_param_ids;
-                std::vector<uint32_t> kernel_calls;
-                Kernel kernel = op.kernel.kernel;
-                if (op.uses_optix) {
-                    uses_optix = true;
-                    ts->optix_sbt = op.sbt;
-                }
-                ts->launch(kernel, op.kernel.key, op.kernel.hash, launch_size, &kernel_params,
-                           &kernel_param_ids);
-                if (op.uses_optix)
-                    uses_optix = false;
-            }
-
-        }
-
-        break;
-        case OpType::Barrier:{
-            ProfilerPhase profiler(pr_barrier);
-            if (!dry_run)
-                ts->barrier();
-        } break;
-        case OpType::MemsetAsync: {
-            ProfilerPhase profiler(pr_memset_async);
-
-            uint32_t dependency_index = op.dependency_range.first;
-
-            ParamInfo ptr_info = this->dependencies[dependency_index];
-
-            ReplayVariable &ptr_var = replay_variables[ptr_info.slot];
-            ptr_var.alloc(backend, op.size, op.input_size);
-
-            jitc_log(LogLevel::Debug, "replay(): MemsetAsync -> slot(%u) [%zu], op.input_size=%zu",
-                     ptr_info.slot, op.size, op.input_size);
-
-            uint32_t size = ptr_var.size(op.input_size);
-
-            if (!dry_run)
-                ts->memset_async(ptr_var.data, size, op.input_size,
-                                 &op.data);
-        } break;
-        case OpType::ReduceExpanded: {
-            ProfilerPhase profiler(pr_reduce_expanded);
-
-            jitc_log(LogLevel::Debug, "replay(): ReduceExpand");
-
-            uint32_t dependency_index = op.dependency_range.first;
-            ParamInfo data_info = this->dependencies[dependency_index];
-
-            ReplayVariable &data_var = replay_variables[data_info.slot];
-
-            VarType vt = data_info.vtype;
-            ReduceOp rop = op.rtype;
-            uint32_t size = data_var.size(vt);
-            uint32_t tsize = type_size[(uint32_t)vt];
-            uint32_t workers = pool_size() + 1;
-
-            uint32_t replication_per_worker = size == 1u ? (64u / tsize) : 1u;
-
-            if (!dry_run)
-                ts->reduce_expanded(vt, rop, data_var.data,
-                                    replication_per_worker * workers, size);
-
-        } break;
-        case OpType::Expand: {
-            ProfilerPhase profiler(pr_expand);
-
-            jitc_log(LogLevel::Debug, "replay(): expand");
-
-            uint32_t dependency_index = op.dependency_range.first;
-            bool memcpy = op.dependency_range.second == dependency_index + 2;
-                
-            ParamInfo dst_info = this->dependencies[dependency_index];
-            ReplayVariable &dst_rv = replay_variables[dst_info.slot];
-            VarType vt = dst_info.vtype;
-            uint32_t tsize = type_size[(uint32_t)vt];
-            uint32_t workers = pool_size() + 1;
-                
-            uint32_t size;
-            void *src_ptr = 0;
-            if (memcpy) {
-                ParamInfo src_info     = this->dependencies[dependency_index +1];
-                ReplayVariable &src_rv = replay_variables[src_info.slot];
-                size = src_rv.size(vt);
                 jitc_log(LogLevel::Debug,
-                         "jitc_memcpy_async(dst=%p, src=%p, size=%zu)", dst_rv.data,
-                         src_rv.data, (size_t)size * tsize);
-                    
-                src_ptr = src_rv.data;
-            } else {
-                // Case where in jitc_var_expand, v->is_literal && v->literal == identity
-                size = op.size;
-                jitc_log(LogLevel::Debug,
-                         "jitc_memcpy_async(dst=%p, src= literal 0x%lx, size=%zu)", dst_rv.data,
-                         op.data, (size_t)size * tsize);
-            }
+                         "replay(): inferring kernel launch size");
 
-            if (size != op.size)
-                return false;
+                // Size of direct input variables
+                uint32_t input_size = 0;
+                // Size of variables referenced by pointers
+                uint32_t ptr_size = 0;
 
-            uint32_t replication_per_worker = size == 1u ? (64u / tsize) : 1u;
-            size_t new_size =
-                size * (size_t)replication_per_worker * (size_t)workers;
+                for (uint32_t j = op.dependency_range.first;
+                     j < op.dependency_range.second; ++j) {
+                    ParamInfo info     = this->dependencies[j];
+                    ReplayVariable &rv = replay_variables[info.slot];
 
-            dst_rv.alloc(backend, new_size, dst_info.vtype);
+                    if (info.type == ParamType::Input) {
+                        jitc_log(LogLevel::Debug, "infering size of s%u",
+                                 info.slot);
+                        uint32_t size = rv.size(info.vtype);
+                        jitc_log(LogLevel::Debug, "    size=%u", size);
 
-            if (!dry_run)
-                ts->memset_async(dst_rv.data, new_size, tsize, &op.data);
-                
-            if (!dry_run && memcpy)
-                ts->memcpy_async(dst_rv.data, src_ptr,
-                                 (size_t)size * tsize);
+                        if (rv.data == nullptr && !dry_run)
+                            jitc_fail(
+                                "replay(): Kernel input variable (slot=%u) "
+                                "not allocated!",
+                                info.slot);
 
-            dst_rv.data_size = size * type_size[(uint32_t)dst_info.vtype];
-            // dst_rv.size = size;
-        } break;
-        case OpType::Compress: {
-            ProfilerPhase profiler(pr_compress);
+                        if (!info.pointer_access)
+                            input_size = std::max(input_size, size);
+                        else
+                            ptr_size = std::max(ptr_size, size);
+                    }
+                }
 
-            uint32_t dependency_index = op.dependency_range.first;
+                // Given the maximum size of the input variables (accessed
+                // directly and through pointers) we can infer the kernel launch
+                // size. We assume that the launch size is either a multiple of
+                // the maximum input variable (directly accessed) or if the
+                // kernel has no direct input variable, a multiple or fraction
+                // of the largest variable accessed through a pointer. If the
+                // launch size could not be inferred, we use the recorded size.
 
-            ParamInfo in_info = this->dependencies[dependency_index];
-            ParamInfo out_info = this->dependencies[dependency_index + 1];
+                uint32_t launch_size = 0;
+                if (op.input_size > 0) {
+                    launch_size = input_size != 0 ? input_size : ptr_size;
+                    // Apply the factor
+                    if (op.size > op.input_size &&
+                        (op.size % op.input_size == 0)) {
+                        if (op.size % op.input_size != 0)
+                            jitc_raise(
+                                "replay(): Could not infer launch size, using "
+                                "heuristic!");
+                        size_t ratio = op.size / op.input_size;
+                        jitc_log(
+                            LogLevel::Debug,
+                            "replay(): Inferring launch size by heuristic, "
+                            "launch_size=%u, ratio=%zu",
+                            launch_size, ratio);
+                        launch_size = launch_size * ratio;
+                    } else if (op.input_size % op.size == 0) {
+                        if (op.input_size % op.size != 0)
+                            jitc_raise(
+                                "replay(): Could not infer launch size, using "
+                                "heuristic!");
 
-            ReplayVariable &in_rv = replay_variables[in_info.slot];
-            ReplayVariable &out_rv = replay_variables[out_info.slot];
-
-            uint32_t size = in_rv.size(in_info.vtype);
-            out_rv.alloc(backend, size, out_info.vtype);
-
-            if (dry_run)
-                jitc_fail(
-                    "replay(): dry_run compress operation not supported!");
-
-            uint32_t out_size = ts->compress((uint8_t *)in_rv.data, size,
-                                             (uint32_t *)out_rv.data);
-
-            out_rv.data_size = out_size * type_size[(uint32_t)out_info.vtype];
-        } break;
-        case OpType::MemcpyAsync: {
-            ProfilerPhase profiler(pr_memset_async);
-
-            uint32_t dependency_index = op.dependency_range.first;
-            ParamInfo src_info = this->dependencies[dependency_index];
-            ParamInfo dst_info = this->dependencies[dependency_index + 1];
-
-            ReplayVariable &src_var = replay_variables[src_info.slot];
-            ReplayVariable &dst_var = replay_variables[dst_info.slot];
-
-
-            // size_t size = src_var.size(src_info.vtype);
-            jitc_log(LogLevel::Debug,
-                     "replay(): MemcpyAsync slot(%u) <- slot(%u) [%zu]",
-                     dst_info.slot, src_info.slot, src_var.data_size);
-
-            dst_var.alloc(backend, src_var.data_size);
-
-            jitc_log(LogLevel::Debug, "    src.data=%p", src_var.data);
-            jitc_log(LogLevel::Debug, "    dst.data=%p", dst_var.data);
-
-            if (!dry_run)
-                ts->memcpy_async(dst_var.data, src_var.data, src_var.data_size);
-        } break;
-        case OpType::Mkperm: {
-            ProfilerPhase profiler(pr_mkperm);
-
-            jitc_log(LogLevel::Debug, "Mkperm:");
-            uint32_t dependency_index = op.dependency_range.first;
-            ParamInfo values_info = this->dependencies[dependency_index];
-            ParamInfo perm_info = this->dependencies[dependency_index + 1];
-            ParamInfo offsets_info = this->dependencies[dependency_index + 2];
-
-            ReplayVariable &values_var = replay_variables[values_info.slot];
-            ReplayVariable &perm_var = replay_variables[perm_info.slot];
-            ReplayVariable &offsets_var = replay_variables[offsets_info.slot];
-
-            uint32_t size = values_var.size(values_info.vtype);
-            uint32_t bucket_count = op.bucket_count;
-
-            jitc_log(LogLevel::Info, " -> values: slot(%u, data=%p, size=%u)",
-                     values_info.slot, values_var.data, size);
-
-            jitc_log(LogLevel::Info, " <- perm: slot(%u)", perm_info.slot);
-            perm_var.alloc(backend, size, perm_info.vtype);
-
-            jitc_log(LogLevel::Info, " <- offsets: slot(%u)",
-                     offsets_info.slot);
-            offsets_var.alloc(backend, bucket_count * 4 + 1,
-                              offsets_info.vtype);
-
-            jitc_log(LogLevel::Debug,
-                     "    mkperm(values=%p, size=%u, "
-                     "bucket_count=%u, perm=%p, offsets=%p)",
-                     values_var.data, size, bucket_count, perm_var.data,
-                     offsets_var.data);
-
-            if (!dry_run)
-                ts->mkperm((uint32_t *)values_var.data, size, bucket_count,
-                           (uint32_t *)perm_var.data,
-                           (uint32_t *)offsets_var.data);
-
-        } break;
-        case OpType::BlockReduce: {
-            ProfilerPhase profiler(pr_block_reduce);
-
-            uint32_t dependency_index = op.dependency_range.first;
-            ParamInfo in_info         = this->dependencies[dependency_index];
-            ParamInfo out_info = this->dependencies[dependency_index + 1];
-
-            ReplayVariable &in_var  = replay_variables[in_info.slot];
-            ReplayVariable &out_var = replay_variables[out_info.slot];
-
-            uint32_t size = in_var.size(in_info.vtype);
-
-            uint32_t block_size = op.input_size;
-            if (op.input_size == op.size)
-                block_size = size;
-
-            if (size % block_size != 0)
-                jitc_fail(
-                    "replay(): The size (%u) of the argument to a "
-                    "block_sum has to be divisible by the block_size (%u)!",
-                    size, block_size);
-
-            uint32_t output_size = size / block_size;
-
-            out_var.alloc(backend, output_size, out_info.vtype);
-
-            if (!dry_run)
-                ts->block_reduce(out_info.vtype, op.rtype, size, block_size,
-                                 in_var.data, out_var.data);
-
-        } break;
-        case OpType::BlockPrefixReduce: {
-            ProfilerPhase profiler(pr_block_reduce);
-
-            uint32_t dependency_index = op.dependency_range.first;
-            ParamInfo in_info         = this->dependencies[dependency_index];
-            ParamInfo out_info = this->dependencies[dependency_index + 1];
-
-            ReplayVariable &in_var  = replay_variables[in_info.slot];
-            ReplayVariable &out_var = replay_variables[out_info.slot];
-
-            uint32_t size = in_var.size(in_info.vtype);
-
-            uint32_t block_size = op.input_size;
-            if (op.input_size == op.size)
-                block_size = size;
-
-            if (size % block_size != 0)
-                jitc_fail(
-                    "replay(): The size (%u) of the argument to a "
-                    "block_sum has to be divisible by the block_size (%u)!",
-                    size, block_size);
-
-            uint32_t output_size = size;
-
-            out_var.alloc(backend, output_size, out_info.vtype);
-
-            if (!dry_run)
-                ts->block_prefix_reduce(
-                    out_info.vtype, op.prefix_reduce.rtype, size, block_size,
-                    op.prefix_reduce.exclusive, op.prefix_reduce.reverse,
-                    in_var.data, out_var.data);
-
-        } break;
-        case OpType::Aggregate: {
-            ProfilerPhase profiler(pr_aggregate);
-
-            jitc_log(LogLevel::Debug, "replay(): Aggregate");
-
-            uint32_t i = op.dependency_range.first;
-
-            ParamInfo dst_info = this->dependencies[i++];
-            ReplayVariable &dst_rv = replay_variables[dst_info.slot];
-
-            AggregationEntry *agg = nullptr;
-
-            size_t agg_size = sizeof(AggregationEntry) * op.size;
-
-            if (backend == JitBackend::CUDA)
-                agg = (AggregationEntry *)jitc_malloc(AllocType::HostPinned,
-                                                      agg_size);
-            else
-                agg = (AggregationEntry *)malloc_check(agg_size);
-
-            AggregationEntry *p = agg;
-
-            for (; i < op.dependency_range.second; ++i) {
-                ParamInfo param = this->dependencies[i];
-
-                if (param.type == ParamType::Input) {
-                    ReplayVariable &rv = replay_variables[param.slot];
+                        uint32_t fraction = op.input_size / op.size;
+                        jitc_log(
+                            LogLevel::Debug,
+                            "replay(): Inferring launch size by heuristic, "
+                            "launch_size(%u), fraction=%u",
+                            launch_size, fraction);
+                        launch_size = launch_size / fraction;
+                    }
+                }
+                if (launch_size == 0) {
                     jitc_log(LogLevel::Debug,
-                             " -> slot(%u, is_pointer=%u, offset=%u)",
-                             param.slot, param.pointer_access,
-                             param.extra.offset);
-                    // HACK: Had to disable this, but I don't understand why?
-                    // if(rv.data == nullptr && !dry_run )
-                    //     jitc_fail("replay(): Encountered nullptr in parameter s%u.", param.slot);
-                        
-                    if(rv.init == RecordVarInit::Captured){
-                        jitc_log(LogLevel::Debug, "    captured");
-                        jitc_log(LogLevel::Debug, "    label=%s",
-                                 jitc_var_label(rv.index));
-                        jitc_log(LogLevel::Debug, "    data=%s",
-                                 jitc_var_str(rv.index));
+                             "replay(): Could not infer launch "
+                             "size, using recorded size");
+                    launch_size = op.size;
+                }
+
+                // Allocate output variables for kernel launch.
+                // The assumption here is that for every kernel launch, the
+                // inputs are already allocated. Therefore we only allocate
+                // output variables, which have the same size as the kernel.
+                for (uint32_t j = op.dependency_range.first;
+                     j < op.dependency_range.second; ++j) {
+                    ParamInfo info     = this->dependencies[j];
+                    ReplayVariable &rv = replay_variables[info.slot];
+
+                    if (info.type == ParamType::Input) {
+                        uint32_t size = rv.size(info.vtype);
+                        jitc_log(LogLevel::Info,
+                                 " -> param slot(%u, is_pointer=%u, size=%u)",
+                                 info.slot, info.pointer_access, size);
+                        if (rv.init == RecordVarInit::Captured) {
+                            jitc_log(LogLevel::Debug, "    label=%s",
+                                     jitc_var_label(rv.index));
+                            jitc_log(LogLevel::Debug, "    data=%s",
+                                     jitc_var_str(rv.index));
+                        }
+                    } else {
+                        jitc_log(LogLevel::Info,
+                                 " <- param slot(%u, is_pointer=%u)", info.slot,
+                                 info.pointer_access);
                     }
 
-                    p->size = param.pointer_access
-                                  ? 8
-                                  : -(int)type_size[(uint32_t)param.vtype];
-                    p->offset = param.extra.offset;
-                    p->src = rv.data;
-                } else {
-                    jitc_log(LogLevel::Debug, " -> literal: offset=%u, size=%u",
-                             param.extra.offset, param.extra.type_size);
-                    p->size = param.extra.type_size;
-                    p->offset = param.extra.offset;
-                    p->src = (void *)param.extra.data;
+                    if (info.type == ParamType::Output) {
+                        rv.alloc(backend, launch_size, info.vtype);
+                    }
+                    jitc_log(LogLevel::Info, "    data=%p", rv.data);
+                    jitc_assert(
+                        rv.data != nullptr || dry_run,
+                        "replay(): Encountered nullptr in kernel parameters.");
+                    kernel_params.push_back(rv.data);
                 }
 
-                p++;
+                // Change kernel size in `kernel_params`
+                if (backend == JitBackend::CUDA) {
+                    uintptr_t size = 0;
+                    std::memcpy(&size, &launch_size, sizeof(uint32_t));
+                    kernel_params[0] = (void *) size;
+                }
+
+                if (!dry_run) {
+                    jitc_log(LogLevel::Info,
+                             "    launch_size=%u, uses_optix=%u", launch_size,
+                             op.uses_optix);
+                    std::vector<uint32_t> kernel_param_ids;
+                    std::vector<uint32_t> kernel_calls;
+                    Kernel kernel = op.kernel.kernel;
+                    if (op.uses_optix) {
+                        uses_optix    = true;
+                        ts->optix_sbt = op.sbt;
+                    }
+                    ts->launch(kernel, op.kernel.key, op.kernel.hash,
+                               launch_size, &kernel_params, &kernel_param_ids);
+                    if (op.uses_optix)
+                        uses_optix = false;
+                }
+
             }
 
-            AggregationEntry *last = p - 1;
-            uint32_t data_size =
-                last->offset + (last->size > 0 ? last->size : -last->size);
-            // Restore to full alignment
-            data_size = (data_size + 7) / 8 * 8;
-
-            dst_rv.alloc(backend, data_size, VarType::UInt8);
-
-            jitc_log(LogLevel::Debug,
-                     " <- slot(%u, is_pointer=%u, data=%p, size=%u)",
-                     dst_info.slot, dst_info.pointer_access, dst_rv.data,
-                     data_size);
-
-            jitc_assert(dst_rv.data != nullptr || dry_run,
-                        "replay(): Error allocating dst.");
-
-            if (!dry_run)
-                ts->aggregate(dst_rv.data, agg, (uint32_t)(p - agg));
-
-        } break;
-        case OpType::Free: {
-            ProfilerPhase profiler(pr_free);
-
-            uint32_t i         = op.dependency_range.first;
-            ParamInfo info     = dependencies[i];
-            ReplayVariable &rv = replay_variables[info.slot];
-
-            rv.free();
-
-        } break;
-        default:
-            jitc_fail("An operation has been recorded, that is not known to "
-                      "the replay functionality!");
             break;
+            case OpType::Barrier: {
+                ProfilerPhase profiler(pr_barrier);
+                if (!dry_run)
+                    ts->barrier();
+            } break;
+            case OpType::MemsetAsync: {
+                ProfilerPhase profiler(pr_memset_async);
+
+                uint32_t dependency_index = op.dependency_range.first;
+
+                ParamInfo ptr_info = this->dependencies[dependency_index];
+
+                ReplayVariable &ptr_var = replay_variables[ptr_info.slot];
+                ptr_var.alloc(backend, op.size, op.input_size);
+
+                jitc_log(LogLevel::Debug,
+                         "replay(): MemsetAsync -> slot(%u) [%zu], "
+                         "op.input_size=%zu",
+                         ptr_info.slot, op.size, op.input_size);
+
+                uint32_t size = ptr_var.size(op.input_size);
+
+                if (!dry_run)
+                    ts->memset_async(ptr_var.data, size, op.input_size,
+                                     &op.data);
+            } break;
+            case OpType::ReduceExpanded: {
+                ProfilerPhase profiler(pr_reduce_expanded);
+
+                jitc_log(LogLevel::Debug, "replay(): ReduceExpand");
+
+                uint32_t dependency_index = op.dependency_range.first;
+                ParamInfo data_info = this->dependencies[dependency_index];
+
+                ReplayVariable &data_var = replay_variables[data_info.slot];
+
+                VarType vt       = data_info.vtype;
+                ReduceOp rop     = op.rtype;
+                uint32_t size    = data_var.size(vt);
+                uint32_t tsize   = type_size[(uint32_t) vt];
+                uint32_t workers = pool_size() + 1;
+
+                uint32_t replication_per_worker =
+                    size == 1u ? (64u / tsize) : 1u;
+
+                if (!dry_run)
+                    ts->reduce_expanded(vt, rop, data_var.data,
+                                        replication_per_worker * workers, size);
+
+            } break;
+            case OpType::Expand: {
+                ProfilerPhase profiler(pr_expand);
+
+                jitc_log(LogLevel::Debug, "replay(): expand");
+
+                uint32_t dependency_index = op.dependency_range.first;
+                bool memcpy =
+                    op.dependency_range.second == dependency_index + 2;
+
+                ParamInfo dst_info     = this->dependencies[dependency_index];
+                ReplayVariable &dst_rv = replay_variables[dst_info.slot];
+                VarType vt             = dst_info.vtype;
+                uint32_t tsize         = type_size[(uint32_t) vt];
+                uint32_t workers       = pool_size() + 1;
+
+                uint32_t size;
+                void *src_ptr = 0;
+                if (memcpy) {
+                    ParamInfo src_info =
+                        this->dependencies[dependency_index + 1];
+                    ReplayVariable &src_rv = replay_variables[src_info.slot];
+                    size                   = src_rv.size(vt);
+                    jitc_log(LogLevel::Debug,
+                             "jitc_memcpy_async(dst=%p, src=%p, size=%zu)",
+                             dst_rv.data, src_rv.data, (size_t) size * tsize);
+
+                    src_ptr = src_rv.data;
+                } else {
+                    // Case where in jitc_var_expand, v->is_literal &&
+                    // v->literal == identity
+                    size = op.size;
+                    jitc_log(LogLevel::Debug,
+                             "jitc_memcpy_async(dst=%p, src= literal 0x%lx, "
+                             "size=%zu)",
+                             dst_rv.data, op.data, (size_t) size * tsize);
+                }
+
+                if (size != op.size)
+                    return false;
+
+                uint32_t replication_per_worker =
+                    size == 1u ? (64u / tsize) : 1u;
+                size_t new_size =
+                    size * (size_t) replication_per_worker * (size_t) workers;
+
+                dst_rv.alloc(backend, new_size, dst_info.vtype);
+
+                if (!dry_run)
+                    ts->memset_async(dst_rv.data, new_size, tsize, &op.data);
+
+                if (!dry_run && memcpy)
+                    ts->memcpy_async(dst_rv.data, src_ptr,
+                                     (size_t) size * tsize);
+
+                dst_rv.data_size = size * type_size[(uint32_t) dst_info.vtype];
+                // dst_rv.size = size;
+            } break;
+            case OpType::Compress: {
+                ProfilerPhase profiler(pr_compress);
+
+                uint32_t dependency_index = op.dependency_range.first;
+
+                ParamInfo in_info  = this->dependencies[dependency_index];
+                ParamInfo out_info = this->dependencies[dependency_index + 1];
+
+                ReplayVariable &in_rv  = replay_variables[in_info.slot];
+                ReplayVariable &out_rv = replay_variables[out_info.slot];
+
+                uint32_t size = in_rv.size(in_info.vtype);
+                out_rv.alloc(backend, size, out_info.vtype);
+
+                if (dry_run)
+                    jitc_fail(
+                        "replay(): dry_run compress operation not supported!");
+
+                uint32_t out_size = ts->compress((uint8_t *) in_rv.data, size,
+                                                 (uint32_t *) out_rv.data);
+
+                out_rv.data_size =
+                    out_size * type_size[(uint32_t) out_info.vtype];
+            } break;
+            case OpType::MemcpyAsync: {
+                ProfilerPhase profiler(pr_memset_async);
+
+                uint32_t dependency_index = op.dependency_range.first;
+                ParamInfo src_info = this->dependencies[dependency_index];
+                ParamInfo dst_info = this->dependencies[dependency_index + 1];
+
+                ReplayVariable &src_var = replay_variables[src_info.slot];
+                ReplayVariable &dst_var = replay_variables[dst_info.slot];
+
+                // size_t size = src_var.size(src_info.vtype);
+                jitc_log(LogLevel::Debug,
+                         "replay(): MemcpyAsync slot(%u) <- slot(%u) [%zu]",
+                         dst_info.slot, src_info.slot, src_var.data_size);
+
+                dst_var.alloc(backend, src_var.data_size);
+
+                jitc_log(LogLevel::Debug, "    src.data=%p", src_var.data);
+                jitc_log(LogLevel::Debug, "    dst.data=%p", dst_var.data);
+
+                if (!dry_run)
+                    ts->memcpy_async(dst_var.data, src_var.data,
+                                     src_var.data_size);
+            } break;
+            case OpType::Mkperm: {
+                ProfilerPhase profiler(pr_mkperm);
+
+                jitc_log(LogLevel::Debug, "Mkperm:");
+                uint32_t dependency_index = op.dependency_range.first;
+                ParamInfo values_info = this->dependencies[dependency_index];
+                ParamInfo perm_info = this->dependencies[dependency_index + 1];
+                ParamInfo offsets_info =
+                    this->dependencies[dependency_index + 2];
+
+                ReplayVariable &values_var = replay_variables[values_info.slot];
+                ReplayVariable &perm_var   = replay_variables[perm_info.slot];
+                ReplayVariable &offsets_var =
+                    replay_variables[offsets_info.slot];
+
+                uint32_t size         = values_var.size(values_info.vtype);
+                uint32_t bucket_count = op.bucket_count;
+
+                jitc_log(LogLevel::Info,
+                         " -> values: slot(%u, data=%p, size=%u)",
+                         values_info.slot, values_var.data, size);
+
+                jitc_log(LogLevel::Info, " <- perm: slot(%u)", perm_info.slot);
+                perm_var.alloc(backend, size, perm_info.vtype);
+
+                jitc_log(LogLevel::Info, " <- offsets: slot(%u)",
+                         offsets_info.slot);
+                offsets_var.alloc(backend, bucket_count * 4 + 1,
+                                  offsets_info.vtype);
+
+                jitc_log(LogLevel::Debug,
+                         "    mkperm(values=%p, size=%u, "
+                         "bucket_count=%u, perm=%p, offsets=%p)",
+                         values_var.data, size, bucket_count, perm_var.data,
+                         offsets_var.data);
+
+                if (!dry_run)
+                    ts->mkperm((uint32_t *) values_var.data, size, bucket_count,
+                               (uint32_t *) perm_var.data,
+                               (uint32_t *) offsets_var.data);
+
+            } break;
+            case OpType::BlockReduce: {
+                ProfilerPhase profiler(pr_block_reduce);
+
+                uint32_t dependency_index = op.dependency_range.first;
+                ParamInfo in_info  = this->dependencies[dependency_index];
+                ParamInfo out_info = this->dependencies[dependency_index + 1];
+
+                ReplayVariable &in_var  = replay_variables[in_info.slot];
+                ReplayVariable &out_var = replay_variables[out_info.slot];
+
+                uint32_t size = in_var.size(in_info.vtype);
+
+                uint32_t block_size = op.input_size;
+                if (op.input_size == op.size)
+                    block_size = size;
+
+                if (size % block_size != 0)
+                    jitc_fail(
+                        "replay(): The size (%u) of the argument to a "
+                        "block_sum has to be divisible by the block_size (%u)!",
+                        size, block_size);
+
+                uint32_t output_size = size / block_size;
+
+                out_var.alloc(backend, output_size, out_info.vtype);
+
+                if (!dry_run)
+                    ts->block_reduce(out_info.vtype, op.rtype, size, block_size,
+                                     in_var.data, out_var.data);
+
+            } break;
+            case OpType::BlockPrefixReduce: {
+                ProfilerPhase profiler(pr_block_reduce);
+
+                uint32_t dependency_index = op.dependency_range.first;
+                ParamInfo in_info  = this->dependencies[dependency_index];
+                ParamInfo out_info = this->dependencies[dependency_index + 1];
+
+                ReplayVariable &in_var  = replay_variables[in_info.slot];
+                ReplayVariable &out_var = replay_variables[out_info.slot];
+
+                uint32_t size = in_var.size(in_info.vtype);
+
+                uint32_t block_size = op.input_size;
+                if (op.input_size == op.size)
+                    block_size = size;
+
+                if (size % block_size != 0)
+                    jitc_fail(
+                        "replay(): The size (%u) of the argument to a "
+                        "block_sum has to be divisible by the block_size (%u)!",
+                        size, block_size);
+
+                uint32_t output_size = size;
+
+                out_var.alloc(backend, output_size, out_info.vtype);
+
+                if (!dry_run)
+                    ts->block_prefix_reduce(
+                        out_info.vtype, op.prefix_reduce.rtype, size,
+                        block_size, op.prefix_reduce.exclusive,
+                        op.prefix_reduce.reverse, in_var.data, out_var.data);
+
+            } break;
+            case OpType::Aggregate: {
+                ProfilerPhase profiler(pr_aggregate);
+
+                jitc_log(LogLevel::Debug, "replay(): Aggregate");
+
+                uint32_t i = op.dependency_range.first;
+
+                ParamInfo dst_info     = this->dependencies[i++];
+                ReplayVariable &dst_rv = replay_variables[dst_info.slot];
+
+                AggregationEntry *agg = nullptr;
+
+                size_t agg_size = sizeof(AggregationEntry) * op.size;
+
+                if (backend == JitBackend::CUDA)
+                    agg = (AggregationEntry *) jitc_malloc(
+                        AllocType::HostPinned, agg_size);
+                else
+                    agg = (AggregationEntry *) malloc_check(agg_size);
+
+                AggregationEntry *p = agg;
+
+                for (; i < op.dependency_range.second; ++i) {
+                    ParamInfo param = this->dependencies[i];
+
+                    if (param.type == ParamType::Input) {
+                        ReplayVariable &rv = replay_variables[param.slot];
+                        jitc_log(LogLevel::Debug,
+                                 " -> slot(%u, is_pointer=%u, offset=%u)",
+                                 param.slot, param.pointer_access,
+                                 param.extra.offset);
+                        // HACK: Had to disable this, but I don't understand
+                        // why? if(rv.data == nullptr && !dry_run )
+                        //     jitc_fail("replay(): Encountered nullptr in
+                        //     parameter s%u.", param.slot);
+
+                        if (rv.init == RecordVarInit::Captured) {
+                            jitc_log(LogLevel::Debug, "    captured");
+                            jitc_log(LogLevel::Debug, "    label=%s",
+                                     jitc_var_label(rv.index));
+                            jitc_log(LogLevel::Debug, "    data=%s",
+                                     jitc_var_str(rv.index));
+                        }
+
+                        p->size =
+                            param.pointer_access
+                                ? 8
+                                : -(int) type_size[(uint32_t) param.vtype];
+                        p->offset = param.extra.offset;
+                        p->src    = rv.data;
+                    } else {
+                        jitc_log(LogLevel::Debug,
+                                 " -> literal: offset=%u, size=%u",
+                                 param.extra.offset, param.extra.type_size);
+                        p->size   = param.extra.type_size;
+                        p->offset = param.extra.offset;
+                        p->src    = (void *) param.extra.data;
+                    }
+
+                    p++;
+                }
+
+                AggregationEntry *last = p - 1;
+                uint32_t data_size =
+                    last->offset + (last->size > 0 ? last->size : -last->size);
+                // Restore to full alignment
+                data_size = (data_size + 7) / 8 * 8;
+
+                dst_rv.alloc(backend, data_size, VarType::UInt8);
+
+                jitc_log(LogLevel::Debug,
+                         " <- slot(%u, is_pointer=%u, data=%p, size=%u)",
+                         dst_info.slot, dst_info.pointer_access, dst_rv.data,
+                         data_size);
+
+                jitc_assert(dst_rv.data != nullptr || dry_run,
+                            "replay(): Error allocating dst.");
+
+                if (!dry_run)
+                    ts->aggregate(dst_rv.data, agg, (uint32_t) (p - agg));
+
+            } break;
+            case OpType::Free: {
+                ProfilerPhase profiler(pr_free);
+
+                uint32_t i         = op.dependency_range.first;
+                ParamInfo info     = dependencies[i];
+                ReplayVariable &rv = replay_variables[info.slot];
+
+                rv.free();
+
+            } break;
+            default:
+                jitc_fail(
+                    "An operation has been recorded, that is not known to "
+                    "the replay functionality!");
+                break;
         }
     }
 
@@ -715,7 +739,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
     jitc_log(LogLevel::Debug, "replay(): creating outputs");
     for (uint32_t i = 0; i < this->outputs.size(); ++i) {
         ParamInfo info = this->outputs[i];
-        uint32_t slot = info.slot;
+        uint32_t slot  = info.slot;
         // uint32_t index = this->outputs[i];
         ReplayVariable &rv = replay_variables[slot];
         // if (rv.type != info.vtype)
@@ -723,14 +747,18 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
         if (rv.init == RecordVarInit::Input) {
             // Use input variable
-            jitc_log(LogLevel::Debug, "    output %u: from slot s%u = input[%u]", i, slot, rv.index);
+            jitc_log(LogLevel::Debug,
+                     "    output %u: from slot s%u = input[%u]", i, slot,
+                     rv.index);
             jitc_assert(rv.data, "replay(): freed an input variable "
                                  "that is passed through!");
             uint32_t var_index = replay_inputs[rv.index];
             jitc_var_inc_ref(var_index);
             outputs[i] = var_index;
         } else if (rv.init == RecordVarInit::Captured) {
-            jitc_log(LogLevel::Debug, "    output %u: from slot s%u = captured[%u]", i, slot, rv.index);
+            jitc_log(LogLevel::Debug,
+                     "    output %u: from slot s%u = captured[%u]", i, slot,
+                     rv.index);
             jitc_assert(rv.data, "replay(): freed an input variable "
                                  "that is passed through!");
 
@@ -739,7 +767,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
             outputs[i] = rv.index;
         } else {
             jitc_log(LogLevel::Debug, "    output %u: from slot s%u", i, slot);
-            if(!rv.data)
+            if (!rv.data)
                 jitc_fail("replay(): freed slot %u used for output.", slot);
             outputs[i] = jitc_var_mem_map(this->backend, info.vtype, rv.data,
                                           rv.size(info.vtype), true);
@@ -751,10 +779,10 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
     }
 
     for (ReplayVariable &rv : replay_variables) {
-        if(rv.init == RecordVarInit::Captured){
+        if (rv.init == RecordVarInit::Captured) {
             jitc_var_dec_ref(rv.index);
             rv.data = 0;
-        }else if (rv.init == RecordVarInit::None && rv.data){
+        } else if (rv.init == RecordVarInit::None && rv.data) {
             rv.free();
         }
     }
@@ -812,9 +840,10 @@ void RecordThreadState::record_expand(uint32_t index) {
     this->m_recording.requires_dry_run = true;
 }
 
-void RecordThreadState::record_launch(Kernel kernel, KernelKey *key, XXH128_hash_t hash,
-                 uint32_t size, std::vector<void *> *kernel_params,
-                 const std::vector<uint32_t> *kernel_param_ids){
+void RecordThreadState::record_launch(
+    Kernel kernel, KernelKey *key, XXH128_hash_t hash, uint32_t size,
+    std::vector<void *> *kernel_params,
+    const std::vector<uint32_t> *kernel_param_ids) {
     uint32_t kernel_param_offset = this->backend == JitBackend::CUDA ? 1 : 3;
 
     size_t input_size = 0;
@@ -1247,9 +1276,9 @@ void RecordThreadState::record_reduce_expanded(VarType vt, ReduceOp reduce_op,
 }
 
 void Recording::validate() {
-    for(uint32_t i = 0; i < this->record_variables.size(); i++){
+    for (uint32_t i = 0; i < this->record_variables.size(); i++) {
         RecordVariable &rv = this->record_variables[i];
-        if(rv.state == RecordVarState::Uninit){
+        if (rv.state == RecordVarState::Uninit) {
             jitc_fail("record(): Variable at slot s%u %p was left in an "
                       "uninitialized state!",
                       i, rv.ptr);
@@ -1276,14 +1305,14 @@ bool Recording::check_kernel_cache() {
 void jitc_freeze_start(JitBackend backend, const uint32_t *inputs,
                        uint32_t n_inputs) {
 
-    if (jitc_flags() & (uint32_t)JitFlag::FreezingScope)
+    if (jitc_flags() & (uint32_t) JitFlag::FreezingScope)
         jitc_fail("Tried to record a thread_state while inside another "
                   "FreezingScope!");
 
     // Increment scope, can be used to track missing inputs
     jitc_new_scope(backend);
 
-    ThreadState *ts = thread_state(backend);
+    ThreadState *ts              = thread_state(backend);
     RecordThreadState *record_ts = new RecordThreadState(ts);
 
     if (backend == JitBackend::CUDA) {
@@ -1297,7 +1326,7 @@ void jitc_freeze_start(JitBackend backend, const uint32_t *inputs,
     }
 
     uint32_t flags = jitc_flags();
-    flags |= (uint32_t)JitFlag::FreezingScope;
+    flags |= (uint32_t) JitFlag::FreezingScope;
     jitc_set_flags(flags);
 }
 Recording *jitc_freeze_stop(JitBackend backend, const uint32_t *outputs,
@@ -1327,7 +1356,7 @@ Recording *jitc_freeze_stop(JitBackend backend, const uint32_t *outputs,
         recording->validate();
 
         uint32_t flags = jitc_flags();
-        flags &= ~(uint32_t)JitFlag::FreezingScope;
+        flags &= ~(uint32_t) JitFlag::FreezingScope;
         jitc_set_flags(flags);
 
         if (rts->m_exception) {
@@ -1341,7 +1370,7 @@ Recording *jitc_freeze_stop(JitBackend backend, const uint32_t *outputs,
             "jit_record_stop(): Tried to stop recording a thread state "
             "for backend %u, while no recording was started for this backend. "
             "Try to start the recording with jit_record_start.",
-            (uint32_t)backend);
+            (uint32_t) backend);
     }
 }
 
@@ -1365,7 +1394,7 @@ void jitc_freeze_abort(JitBackend backend) {
         delete rts;
 
         uint32_t flags = jitc_flags();
-        flags &= ~(uint32_t)JitFlag::FreezingScope;
+        flags &= ~(uint32_t) JitFlag::FreezingScope;
         jitc_set_flags(flags);
     }
 }
@@ -1390,7 +1419,7 @@ bool jitc_freeze_pause(JitBackend backend) {
             "jit_record_stop(): Tried to pause recording a thread state "
             "for backend %u, while no recording was started for this backend. "
             "Try to start the recording with jit_record_start.",
-            (uint32_t)backend);
+            (uint32_t) backend);
     }
 }
 bool jitc_freeze_resume(JitBackend backend) {
@@ -1403,7 +1432,7 @@ bool jitc_freeze_resume(JitBackend backend) {
             "jit_record_stop(): Tried to resume recording a thread state "
             "for backend %u, while no recording was started for this backend. "
             "Try to start the recording with jit_record_start.",
-            (uint32_t)backend);
+            (uint32_t) backend);
     }
 }
 
@@ -1419,12 +1448,12 @@ int jitc_freeze_dry_run(Recording *recording, const uint32_t *inputs,
     // Check if all kernels are still present in the kernel cache
     if (!recording->check_kernel_cache())
         return false;
-    if(recording->requires_dry_run){
+    if (recording->requires_dry_run) {
         jitc_log(LogLevel::Debug, "Replaying in dry-run mode");
         dry_run = true;
-        result = recording->replay(inputs, outputs);
+        result  = recording->replay(inputs, outputs);
         dry_run = false;
     }
-    
+
     return result;
 }

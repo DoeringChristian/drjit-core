@@ -639,8 +639,7 @@ private:
                        uint32_t bucket_count, uint32_t *perm,
                        uint32_t *offsets);
     void record_block_reduce(VarType vt, ReduceOp op, uint32_t size,
-                             uint32_t block_size, const void *in,
-                             void *out);
+                             uint32_t block_size, const void *in, void *out);
     void record_block_prefix_reduce(VarType vt, ReduceOp op, uint32_t size,
                                     uint32_t block_size, bool exclusive,
                                     bool reverse, const void *in, void *out);
