@@ -8,9 +8,8 @@
 #include "profile.h"
 
 const char *op_type_name[(int) OpType::Count]{
-    "Barrier",     "KernelLaunch",   "MemsetAsync", "Reduce",
-    "Expand",      "ReduceExpanded", "PrefixSum",   "Compress",
-    "MemcpyAsync", "Mkperm",         "Aggregate",   "Free"
+    "Barrier",  "KernelLaunch", "MemsetAsync", "Expand",    "ReduceExpanded",
+    "Compress", "MemcpyAsync",  "Mkperm",      "Aggregate", "Free"
 };
 
 static bool dry_run = false;
@@ -384,34 +383,6 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 ts->memset_async(ptr_var.data, size, op.input_size,
                                  &op.data);
         } break;
-        case OpType::Reduce: {
-            ProfilerPhase profiler(pr_reduce);
-
-            jitc_log(LogLevel::Debug, "replay(): Reduce");
-            uint32_t dependency_index = op.dependency_range.first;
-
-            ParamInfo ptr_info = this->dependencies[dependency_index];
-            ParamInfo out_info = this->dependencies[dependency_index + 1];
-
-            ReplayVariable &ptr_var = replay_variables[ptr_info.slot];
-            ReplayVariable &out_var = replay_variables[out_info.slot];
-
-            out_var.alloc(backend, 1, out_info.vtype);
-
-            VarType type = ptr_info.vtype;
-            ReduceOp rtype = op.rtype;
-
-            jitc_log(LogLevel::Debug, " -> slot(%u, data=%p)", ptr_info.slot,
-                     ptr_var.data);
-            jitc_log(LogLevel::Debug, " <- slot(%u, data=%p)", out_info.slot,
-                     out_var.data);
-
-            uint32_t size = ptr_var.size(type);
-
-            if (!dry_run)
-                ts->reduce(type, rtype, ptr_var.data, size, out_var.data);
-                
-        } break;
         case OpType::ReduceExpanded: {
             ProfilerPhase profiler(pr_reduce_expanded);
 
@@ -486,25 +457,6 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
             dst_rv.data_size = size * type_size[(uint32_t)dst_info.vtype];
             // dst_rv.size = size;
-        } break;
-        case OpType::PrefixSum: {
-            ProfilerPhase profiler(pr_prefix_sum);
-
-            uint32_t dependency_index = op.dependency_range.first;
-
-            ParamInfo in_info = this->dependencies[dependency_index];
-            ParamInfo out_info = this->dependencies[dependency_index + 1];
-
-            ReplayVariable &in_var = replay_variables[in_info.slot];
-            ReplayVariable &out_var = replay_variables[out_info.slot];
-
-            VarType type = in_info.vtype;
-
-            out_var.alloc(backend, in_var.size(type), out_info.vtype);
-
-            if (!dry_run)
-                ts->prefix_sum(type, op.exclusive, in_var.data, op.size,
-                               out_var.data);
         } break;
         case OpType::Compress: {
             ProfilerPhase profiler(pr_compress);
@@ -1027,37 +979,6 @@ void RecordThreadState::record_memset_async(void *ptr, uint32_t size,
 
     jitc_log(LogLevel::Debug, "record(): memset_async(ptr=s%u)", ptr_id);
 
-    this->m_recording.operations.push_back(op);
-}
-
-void RecordThreadState::record_reduce(VarType type, ReduceOp rtype, const void *ptr, uint32_t size,
-                   void *out){
-    uint32_t start = this->m_recording.dependencies.size();
-    add_in_param(ptr);
-    add_out_param(out, type);
-    uint32_t end = this->m_recording.dependencies.size();
-
-    Operation op;
-    op.type             = OpType::Reduce;
-    op.dependency_range = std::pair(start, end);
-    op.rtype            = rtype;
-    op.size             = size;
-    this->m_recording.operations.push_back(op);
-}
-
-void RecordThreadState::record_prefix_sum(VarType vt, bool exclusive,
-                                          const void *in, uint32_t size,
-                                          void *out) {
-    uint32_t start = this->m_recording.dependencies.size();
-    add_in_param(in);
-    add_out_param(out, vt);
-    uint32_t end = this->m_recording.dependencies.size();
-
-    Operation op;
-    op.type             = OpType::PrefixSum;
-    op.dependency_range = std::pair(start, end);
-    op.exclusive        = exclusive;
-    op.size             = size;
     this->m_recording.operations.push_back(op);
 }
 

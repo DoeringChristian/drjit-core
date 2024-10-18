@@ -17,10 +17,8 @@ enum class OpType {
     Barrier,
     KernelLaunch,
     MemsetAsync,
-    Reduce,
     Expand,
     ReduceExpanded,
-    PrefixSum,
     Compress,
     MemcpyAsync,
     Mkperm,
@@ -309,50 +307,6 @@ struct RecordThreadState : ThreadState {
         return this->m_internal->memset_async(ptr, size, isize, src);
     }
 
-    /// Reduce the given array to a single value
-    void reduce(VarType type, ReduceOp rtype, const void *ptr, uint32_t size,
-                void *out) override {
-        if (!paused()) {
-            try {
-                record_reduce(type, rtype, ptr, size, out);
-            } catch (...) {
-                record_exception();
-            }
-        }
-        scoped_pause();
-        return this->m_internal->reduce(type, rtype, ptr, size, out);
-    }
-
-    /// 'All' reduction for boolean arrays
-    bool all(uint8_t *values, uint32_t size) override {
-        jitc_log(LogLevel::Warn,
-                 "RecordThreadState::all(): unsupported function recording!");
-        scoped_pause();
-        return this->m_internal->all(values, size);
-    }
-
-    /// 'Any' reduction for boolean arrays
-    bool any(uint8_t *values, uint32_t size) override {
-        jitc_log(LogLevel::Warn,
-                 "RecordThreadState::any(): unsupported function recording!");
-        scoped_pause();
-        return this->m_internal->any(values, size);
-    }
-
-    /// Exclusive prefix sum
-    void prefix_sum(VarType vt, bool exclusive, const void *in, uint32_t size,
-                    void *out) override {
-        if (!paused()) {
-            try {
-                record_prefix_sum(vt, exclusive, in, size, out);
-            } catch (...) {
-                record_exception();
-            }
-        }
-        scoped_pause();
-        return this->m_internal->prefix_sum(vt, exclusive, in, size, out);
-    }
-
     /// Mask compression
     uint32_t compress(const uint8_t *in, uint32_t size,
                       uint32_t *out) override {
@@ -444,13 +398,23 @@ struct RecordThreadState : ThreadState {
     }
 
     /// Sum over elements within blocks
-    void block_reduce(VarType type, ReduceOp op, const void *in, uint32_t size,
-                      uint32_t block_size, void *out) override {
+    void block_reduce(VarType vt, ReduceOp op, uint32_t size,
+                      uint32_t block_size, const void *in, void *out) override {
         jitc_log(LogLevel::Warn, "RecordThreadState::block_reduce(): "
                                  "unsupported function recording!");
         scoped_pause();
-        return this->m_internal->block_reduce(type, op, in, size, block_size,
+        return this->m_internal->block_reduce(vt, op, size, block_size, in,
                                               out);
+    }
+
+    void block_prefix_reduce(VarType vt, ReduceOp op, uint32_t size,
+                             uint32_t block_size, bool exclusive, bool reverse,
+                             const void *in, void *out) override {
+        jitc_log(LogLevel::Warn, "RecordThreadState::block_reduce(): "
+                                 "unsupported function recording!");
+        scoped_pause();
+        return this->m_internal->block_prefix_reduce(
+            vt, op, size, block_size, exclusive, reverse, in, out);
     }
 
     /// Compute a dot product of two equal-sized arrays
@@ -652,10 +616,6 @@ private:
                        const std::vector<uint32_t> *kernel_param_ids);
     void record_memset_async(void *ptr, uint32_t size, uint32_t isize,
                              const void *src);
-    void record_reduce(VarType type, ReduceOp rtype, const void *ptr,
-                       uint32_t size, void *out);
-    void record_prefix_sum(VarType vt, bool exclusive, const void *in,
-                           uint32_t size, void *out);
     void record_compress(const uint8_t *in, uint32_t size, uint32_t *out);
     void record_mkperm(const uint32_t *values, uint32_t size,
                        uint32_t bucket_count, uint32_t *perm,
