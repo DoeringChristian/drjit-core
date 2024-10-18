@@ -7,7 +7,6 @@
 #include "malloc.h"
 #include "util.h"
 #include "var.h"
-#include <algorithm>
 #include <cstdint>
 
 /// HashMap, mapping an allocation to a recorded variable
@@ -41,7 +40,7 @@ extern const char *op_type_name[(int) OpType::Count];
  * Then, the parameters can be added.
  * add_out_param(ptr_id, VarType::Void);
  *
- * Finally, the size after adding the paramters can be read and the operation
+ * Finally, the size after adding the parameters can be read and the operation
  * can be pushed.
  * uint32_t end = m_recording.dependencies.size();
  *
@@ -160,7 +159,7 @@ struct ParamInfo {
     /// Records how the variable was accessed i.e. was it the output or input
     /// of/to a kernel.
     ParamType type = ParamType::Input;
-    /// The variable type as which the access occured. Different operations
+    /// The variable type as which the access occurred. Different operations
     /// might reinterpret the same allocation as different types this changes
     /// the inferred launch size of the operation.
     /// For example, a memcpy operation interprets the allocation as `UInt8`
@@ -176,7 +175,7 @@ struct ParamInfo {
         uint32_t offset;
         /// Represents some literal data when aggregating literals.
         uint64_t data;
-        /// The type size, when the actuall type is not known. For example for
+        /// The type size, when the actual type is not known. For example for
         /// the aggregate operation.
         int32_t type_size;
     } extra;
@@ -197,7 +196,7 @@ struct Recording {
 
     /// The variables used in this recording.
     /// Each variable refers to an allocation.
-    /// If an allocation reuses a memory region, it is refered to by a separate
+    /// If an allocation reuses a memory region, it is referred to by a separate
     /// variable.
     std::vector<RecordVariable> record_variables;
 
@@ -352,7 +351,7 @@ struct RecordThreadState : ThreadState {
         return this->m_internal->memcpy(dst, src, size);
     }
 
-    /// Perform an assynchronous copy operation
+    /// Perform an asynchronous copy operation
     void memcpy_async(void *dst, const void *src, size_t size) override {
         jitc_log(LogLevel::Debug,
                  "record(): memcpy_async(dst=%p, src=%p, size=%zu)", dst, src,
@@ -489,7 +488,7 @@ struct RecordThreadState : ThreadState {
 
     /**
      * This function is called every time a pointer is freed using \ref
-     * jitc_free. It reocords the operation and removes the mapping from that
+     * jitc_free. It records the operation and removes the mapping from that
      * pointer to the recorded variable.
      * If the pointer is reused later by another call to \ref jitc_malloc, the
      * \ref RecordThreadState.add_variable function will create a new variable
@@ -538,7 +537,7 @@ struct RecordThreadState : ThreadState {
     }
     /**
      * Adds an output to the recording.
-     * The output can be seen as a final operaton, which also has to infer the
+     * The output can be seen as a final operation, which also has to infer the
      * size of it's input variables.
      * Therefore, we record the full \ref ParamInfo for each output variable.
      */
@@ -613,7 +612,7 @@ private:
 
     /**
      * Record the Expand operation, corresponding to the `jitc_var_expand` call,
-     * whith which the variable `index` has been expanded.
+     * with which the variable `index` has been expanded.
      *
      * Reductions in LLVM might be split into three operations.
      * First the variable is expanded by its size times the number of workers +
@@ -622,7 +621,7 @@ private:
      * The expand operation allocates a new memory region and copies the old
      * content into it.
      * We catch this case if the input variable of a kernel has a reduce_op
-     * asociated with it.
+     * associated with it.
      * The source variable is discovered by walking the operations to the last
      * memcpy and memset, which are then disabled by this function.
      */

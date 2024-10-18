@@ -90,8 +90,8 @@ struct ReplayVariable {
     }
     /**
      * Allocates the data for this replay variable.
-     * If this is atempted twice, we test weather the allocated size is
-     * sufficient and re-allocate the memory if necesarry.
+     * If this is attempted twice, we test weather the allocated size is
+     * sufficient and re-allocate the memory if necessary.
      */
     void alloc(JitBackend backend, size_t dsize) {
         AllocType alloc_type =
@@ -222,9 +222,9 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
                 // We first infer the size of the input variable, given how they
                 // are accessed by the kernel (i.e. as what type). While doing
-                // this, we also record the maximum size of variables accessd
+                // this, we also record the maximum size of variables accessed
                 // directly and through pointers separately. This will then be
-                // used when infering the kernel launch size.
+                // used when inferring the kernel launch size.
 
                 jitc_log(LogLevel::Debug,
                          "replay(): inferring kernel launch size");
@@ -857,7 +857,7 @@ void RecordThreadState::record_launch(
     // The expand operation allocates a new memory region and copies the old
     // content into it.
     // We catch this case if the input variable of a kernel has a reduce_op
-    // asociated with it.
+    // associated with it.
     for (uint32_t param_index = 0; param_index < kernel_param_ids->size();
          param_index++) {
         uint32_t index       = kernel_param_ids->at(param_index);
@@ -1191,7 +1191,7 @@ void RecordThreadState::record_aggregate(void *dst, AggregationEntry *agg,
         // 1. The input is a pointer (size = 8 and it is known to the malloc
         // cache)
         // 2. The input is an evaluated variable (size < 0)
-        // 3. The variabel is a literal (size > 0 and it is not a
+        // 3. The variable is a literal (size > 0 and it is not a
         // pointer to a known allocation).
 
         bool is_ptr;
@@ -1336,7 +1336,7 @@ Recording *jitc_freeze_stop(JitBackend backend, const uint32_t *outputs,
         rts != nullptr) {
         ThreadState *internal = rts->m_internal;
 
-        // Perform reasignments to internal thread-state of possibly changed
+        // Perform reassignments to internal thread-state of possibly changed
         // variables
         internal->scope = rts->scope;
 
@@ -1381,7 +1381,7 @@ void jitc_freeze_abort(JitBackend backend) {
 
         ThreadState *internal = rts->m_internal;
 
-        // Perform reasignments to internal thread-state of possibly changed
+        // Perform reassignments to internal thread-state of possibly changed
         // variables
         internal->scope = rts->scope;
 
