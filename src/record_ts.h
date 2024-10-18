@@ -22,6 +22,8 @@ enum class OpType {
     Compress,
     MemcpyAsync,
     Mkperm,
+    BlockReduce,
+    BlockPrefixReduce,
     Aggregate,
     Free,
     Count,
@@ -57,10 +59,15 @@ struct Operation {
             Kernel kernel;
             XXH128_hash_t hash;
         } kernel;
-        /// The reduce type of a reduction operation
+        /// The reduce type of a block reduction operation
         ReduceOp rtype;
-        /// Weather a prefix sum operation is exclusive
-        bool exclusive;
+        struct {
+            /// The reduce type of a prefix reduction operation
+            ReduceOp rtype;
+            /// Weather a prefix sum operation is exclusive
+            bool exclusive;
+            bool reverse;
+        } prefix_reduce;
         /// The bucket count for the mkperm operation
         uint32_t bucket_count;
         /// Additional data such as the source of memset
@@ -400,8 +407,13 @@ struct RecordThreadState : ThreadState {
     /// Sum over elements within blocks
     void block_reduce(VarType vt, ReduceOp op, uint32_t size,
                       uint32_t block_size, const void *in, void *out) override {
-        jitc_log(LogLevel::Warn, "RecordThreadState::block_reduce(): "
-                                 "unsupported function recording!");
+        if (!paused()) {
+            try {
+                record_block_reduce(vt, op, size, block_size, in, out);
+            } catch (...) {
+                record_exception();
+            }
+        }
         scoped_pause();
         return this->m_internal->block_reduce(vt, op, size, block_size, in,
                                               out);
@@ -410,8 +422,14 @@ struct RecordThreadState : ThreadState {
     void block_prefix_reduce(VarType vt, ReduceOp op, uint32_t size,
                              uint32_t block_size, bool exclusive, bool reverse,
                              const void *in, void *out) override {
-        jitc_log(LogLevel::Warn, "RecordThreadState::block_reduce(): "
-                                 "unsupported function recording!");
+        if (!paused()) {
+            try {
+                record_block_prefix_reduce(vt, op, size, block_size, exclusive,
+                                           reverse, in, out);
+            } catch (...) {
+                record_exception();
+            }
+        }
         scoped_pause();
         return this->m_internal->block_prefix_reduce(
             vt, op, size, block_size, exclusive, reverse, in, out);
@@ -482,7 +500,7 @@ struct RecordThreadState : ThreadState {
             jitc_log(LogLevel::Debug, "record(): jitc_free(ptr=%p)", ptr);
 
             uint32_t start = this->m_recording.dependencies.size();
-            add_in_param(ptr, false);
+            add_in_param(ptr, VarType::Void, false);
             uint32_t end = this->m_recording.dependencies.size();
 
             Operation op;
@@ -620,6 +638,12 @@ private:
     void record_mkperm(const uint32_t *values, uint32_t size,
                        uint32_t bucket_count, uint32_t *perm,
                        uint32_t *offsets);
+    void record_block_reduce(VarType vt, ReduceOp op, uint32_t size,
+                             uint32_t block_size, const void *in,
+                             void *out);
+    void record_block_prefix_reduce(VarType vt, ReduceOp op, uint32_t size,
+                                    uint32_t block_size, bool exclusive,
+                                    bool reverse, const void *in, void *out);
     void record_aggregate(void *dst, AggregationEntry *agg, uint32_t size);
     void record_reduce_expanded(VarType vt, ReduceOp reduce_op, void *data,
                                 uint32_t exp, uint32_t size);
@@ -780,17 +804,20 @@ private:
         this->m_recording.dependencies.push_back(info);
     }
     /// Helper function for recording input parameters given the slot.
-    void add_in_param(uint32_t slot, bool test_uninit = true) {
+    void add_in_param(uint32_t slot, VarType vtype = VarType::Void,
+                      bool test_uninit = true) {
         ParamInfo info;
         info.type        = ParamType::Input;
         info.slot        = slot;
         info.test_uninit = test_uninit;
+        info.vtype       = vtype;
         add_param(info);
     }
     /// Helper function recording input access given the pointer.
-    void add_in_param(const void *ptr, bool test_uninit = true) {
+    void add_in_param(const void *ptr, VarType vtype = VarType::Void,
+                      bool test_uninit = true) {
         uint32_t slot = this->get_variable(ptr);
-        add_in_param(slot, test_uninit);
+        add_in_param(slot, vtype, test_uninit);
     }
     /// Helper function recording an output access, given the slot and \ref
     /// VarType

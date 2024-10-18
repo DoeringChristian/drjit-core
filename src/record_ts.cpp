@@ -8,8 +8,9 @@
 #include "profile.h"
 
 const char *op_type_name[(int) OpType::Count]{
-    "Barrier",  "KernelLaunch", "MemsetAsync", "Expand",    "ReduceExpanded",
-    "Compress", "MemcpyAsync",  "Mkperm",      "Aggregate", "Free"
+    "Barrier",        "KernelLaunch",      "MemsetAsync", "Expand",
+    "ReduceExpanded", "Compress",          "MemcpyAsync", "Mkperm",
+    "BlockReduce",    "BlockPrefixReduce", "Aggregate",   "Free"
 };
 
 static bool dry_run = false;
@@ -137,13 +138,13 @@ static ProfilerRegion pr_operation("Replay Operation");
 static ProfilerRegion pr_kernel_launch("KernelLaunch");
 static ProfilerRegion pr_barrier("Barrier");
 static ProfilerRegion pr_memset_async("MemsetAsync");
-static ProfilerRegion pr_reduce("Reduce");
 static ProfilerRegion pr_reduce_expanded("ReduceExpanded");
 static ProfilerRegion pr_expand("Expand");
-static ProfilerRegion pr_prefix_sum("PrefixSum");
 static ProfilerRegion pr_compress("Compress");
 static ProfilerRegion pr_memcpy_async("MemcpyAsync");
 static ProfilerRegion pr_mkperm("Mkperm");
+static ProfilerRegion pr_block_reduce("BlockReduce");
+static ProfilerRegion pr_block_prefix_reduce("BlockPrefixReduce");
 static ProfilerRegion pr_aggregate("Aggregate");
 static ProfilerRegion pr_free("Free");
 static ProfilerRegion pr_output("Output");
@@ -542,6 +543,70 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 ts->mkperm((uint32_t *)values_var.data, size, bucket_count,
                            (uint32_t *)perm_var.data,
                            (uint32_t *)offsets_var.data);
+
+        } break;
+        case OpType::BlockReduce: {
+            ProfilerPhase profiler(pr_block_reduce);
+
+            uint32_t dependency_index = op.dependency_range.first;
+            ParamInfo in_info         = this->dependencies[dependency_index];
+            ParamInfo out_info = this->dependencies[dependency_index + 1];
+
+            ReplayVariable &in_var  = replay_variables[in_info.slot];
+            ReplayVariable &out_var = replay_variables[out_info.slot];
+
+            uint32_t size = in_var.size(in_info.vtype);
+
+            uint32_t block_size = op.input_size;
+            if (op.input_size == op.size)
+                block_size = size;
+
+            if (size % block_size != 0)
+                jitc_fail(
+                    "replay(): The size (%u) of the argument to a "
+                    "block_sum has to be divisible by the block_size (%u)!",
+                    size, block_size);
+
+            uint32_t output_size = size / block_size;
+
+            out_var.alloc(backend, output_size, out_info.vtype);
+
+            if (!dry_run)
+                ts->block_reduce(out_info.vtype, op.rtype, size, block_size,
+                                 in_var.data, out_var.data);
+
+        } break;
+        case OpType::BlockPrefixReduce: {
+            ProfilerPhase profiler(pr_block_reduce);
+
+            uint32_t dependency_index = op.dependency_range.first;
+            ParamInfo in_info         = this->dependencies[dependency_index];
+            ParamInfo out_info = this->dependencies[dependency_index + 1];
+
+            ReplayVariable &in_var  = replay_variables[in_info.slot];
+            ReplayVariable &out_var = replay_variables[out_info.slot];
+
+            uint32_t size = in_var.size(in_info.vtype);
+
+            uint32_t block_size = op.input_size;
+            if (op.input_size == op.size)
+                block_size = size;
+
+            if (size % block_size != 0)
+                jitc_fail(
+                    "replay(): The size (%u) of the argument to a "
+                    "block_sum has to be divisible by the block_size (%u)!",
+                    size, block_size);
+
+            uint32_t output_size = size;
+
+            out_var.alloc(backend, output_size, out_info.vtype);
+
+            if (!dry_run)
+                ts->block_prefix_reduce(
+                    out_info.vtype, op.prefix_reduce.rtype, size, block_size,
+                    op.prefix_reduce.exclusive, op.prefix_reduce.reverse,
+                    in_var.data, out_var.data);
 
         } break;
         case OpType::Aggregate: {
@@ -1023,6 +1088,53 @@ void RecordThreadState::record_mkperm(const uint32_t *values, uint32_t size,
         op.bucket_count     = bucket_count;
         this->m_recording.operations.push_back(op);
     }
+}
+
+void RecordThreadState::record_block_reduce(VarType vt, ReduceOp rop,
+                                            uint32_t size, uint32_t block_size,
+                                            const void *in, void *out) {
+    jitc_log(LogLevel::Debug,
+             "record(): block_reduce(vt=%u, op=%u, size=%u, block_size=%u, "
+             "in=%p, out=%p)",
+             (uint32_t) vt, (uint32_t) rop, size, block_size, in, out);
+
+    uint32_t start = this->m_recording.dependencies.size();
+    add_in_param(in, vt);
+    add_out_param(out, vt);
+    uint32_t end = this->m_recording.dependencies.size();
+
+    Operation op;
+    op.type             = OpType::BlockReduce;
+    op.dependency_range = std::pair(start, end);
+    op.size             = size;
+    op.input_size       = block_size;
+    op.rtype            = rop;
+    this->m_recording.operations.push_back(op);
+}
+
+void RecordThreadState::record_block_prefix_reduce(VarType vt, ReduceOp rop,
+                                                   uint32_t size,
+                                                   uint32_t block_size,
+                                                   bool exclusive, bool reverse,
+                                                   const void *in, void *out) {
+    jitc_log(LogLevel::Debug,
+             "record(): block_reduce(vt=%u, op=%u, size=%u, block_size=%u, "
+             "in=%p, out=%p)",
+             (uint32_t) vt, (uint32_t) rop, size, block_size, in, out);
+
+    uint32_t start = this->m_recording.dependencies.size();
+    add_in_param(in, vt);
+    add_out_param(out, vt);
+    uint32_t end = this->m_recording.dependencies.size();
+
+    Operation op;
+    op.type             = OpType::BlockPrefixReduce;
+    op.dependency_range = std::pair(start, end);
+    op.size             = size;
+    op.input_size       = block_size;
+    op.prefix_reduce    = { /*rtype=*/rop, /*exclusive=*/exclusive,
+                         /*reverse=*/reverse };
+    this->m_recording.operations.push_back(op);
 }
 
 void RecordThreadState::record_aggregate(void *dst, AggregationEntry *agg,
