@@ -869,13 +869,14 @@ uint32_t jitc_var_counter(JitBackend backend, size_t size,
     return jitc_var_new(v);
 }
 
-uint32_t jitc_var_symbolic_width(JitBackend backend, uint32_t dep) {
+uint32_t jitc_var_symbolic_width(uint32_t index) {
+    Variable *v1 = jitc_var(index);
     Variable v;
     v.kind = (uint32_t) VarKind::Width;
-    v.backend = (uint32_t) backend;
+    v.backend = (uint32_t) v1->backend;
     v.type = (uint32_t) VarType::UInt32;
     v.size = (uint32_t) 1;
-    v.dep[3] = dep;
+    v.dep[3] = index;
     return jitc_var_new(v);
 }
 
