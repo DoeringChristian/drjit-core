@@ -252,6 +252,11 @@ template <JitBackend Backend_, typename Value_> struct JitArray {
     size_t size() const {
         return jit_var_size(m_index);
     }
+    
+    JitArray<Backend_, uint32_t> symbolic_width() {
+        return JitArray<Backend_, uint32_t>::steal(jit_var_symbolic_width(Backend, m_index));
+    }
+
 
     void resize(size_t size) {
         uint32_t index = jit_var_resize(m_index, size);
@@ -328,10 +333,6 @@ template <JitBackend Backend_, typename Value_> struct JitArray {
     static JitArray<Backend_, uint32_t> counter(size_t size) {
         return JitArray<Backend_, uint32_t>::steal(
             jit_var_counter(Backend, size));
-    }
-
-    static JitArray<Backend_, uint32_t> kernel_width() {
-        return JitArray<Backend_, uint32_t>::steal(jit_var_width(Backend));
     }
 
     // ------------------------------------------------------

@@ -610,9 +610,9 @@ size_t jit_var_size(uint32_t index) {
     return (size_t) jitc_var(index)->size;
 }
 
-uint32_t jit_var_width(JitBackend backend) {
+uint32_t jit_var_symbolic_width(JitBackend backend, uint32_t dep) {
     lock_guard guard(state.lock);
-    return jitc_var_width(backend);
+    return jitc_var_symbolic_width(backend, dep);
 }
 
 VarState jit_var_state(uint32_t index) {
