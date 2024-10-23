@@ -2480,6 +2480,140 @@ extern JIT_EXPORT uint32_t jit_array_write(uint32_t target, uint32_t offset,
 extern JIT_EXPORT uint32_t jit_array_read(uint32_t source, uint32_t offset,
                                           uint32_t mask);
 
+/// Opaque data structure, storing the recodring of a thread state
+struct Recording;
+
+/**
+ * \brief Start recording operations which can be replayed later without tracing
+ * operations.
+ *
+ * \param backend
+ *      The backend for which recording should be started.
+ *
+ * \param inputs
+ *      An array of input variable indices.
+ *      They have to be specified before starting the recording and can be
+ *      changed when replaying the recording.
+ *
+ * \param n_inputs
+ *      The number of input variables for the recording
+ */
+extern JIT_EXPORT void
+jit_freeze_start(JitBackend backend, const uint32_t *inputs, uint32_t n_inputs);
+
+/**
+ * \brief Stop recording operations and return a struct containing the
+ * recording.
+ *
+ * The recording is returned as an opaque pointer and has to be destroyed
+ * afterwards.
+ *
+ * \param backend
+ *      The backend on which recording should be stoped.
+ *
+ *  \param outputs
+ *      An array of output variable indieces.
+ *      When replaying these variables are returned from the replay function.
+ *
+ *  \param n_outputs
+ *      The number of output variables of the recording.
+ */
+extern JIT_EXPORT Recording *jit_freeze_stop(JitBackend backend,
+                                             const uint32_t *outputs,
+                                             uint32_t n_outputs);
+
+/**
+ * \brief Replay a recording with different inputs.
+ *
+ * Replaying a recording with different inputs results in different output
+ * variables.
+ * They get put into the outputs array.
+ *
+ * \param recording
+ *      The recording to replay given different inputs.
+ *
+ * \param inputs
+ *      An array of input variable indices for replaying the recording.
+ *      The number of inputs taken from the array is equal to the number of
+ *      inputs supplied to the jit_start_record function.
+ *
+ * \param outpus
+ *      This array is filled with the output variable indices, created when
+ *      replaying the recording.
+ *      The size of the array has to be equal to the number of output variables
+ *      supplied to the jit_record_stop function.
+ */
+extern JIT_EXPORT void jit_freeze_replay(Recording *recording,
+                                         const uint32_t *inputs,
+                                         uint32_t *outputs);
+
+/**
+ * \brief Perform a dry run of a recording (if required), which does not perform
+ * any actual work.
+ *
+ * Dry running the recording, calculates the widths of all kernels, and might
+ * return 0 if the function has to be re-recorded.
+ *
+ * \param recording
+ *      The recording to replay given different inputs.
+ *
+ * \param inputs
+ *      An array of input variable indices for replaying the recording.
+ *      The number of inputs taken from the array is equal to the number of
+ *      inputs supplied to the jit_start_record function.
+ *      No actual changes are done to the variables in dry-run mode.
+ *
+ * \param outpus
+ *      This array is filled with the output variable indices, created when
+ *      replaying the recording.
+ *      The size of the array has to be equal to the number of output variables
+ *      supplied to the jit_record_stop function.
+ *      No actual changes are done to the variables in dry-run mode.
+ *
+ *
+ * \return false if retracing the function is required, true otherwise
+ */
+extern JIT_EXPORT int jit_freeze_dry_run(Recording *recording,
+                                         const uint32_t *inputs,
+                                         uint32_t *outputs);
+
+/**
+ * \brief Pause recording the ThreadState for this backend.
+ *      Returns true if recording has already been paused.
+ *
+ * \param backend
+ *      The backend for which to pause recording the thread state.
+ */
+extern JIT_EXPORT bool jit_freeze_pause(JitBackend backend);
+
+/**
+ * \brief Resume recording the ThreadState for this backend.
+ *      Returns true if recording has already been resumed
+ *      or never paused.
+ *
+ * \param backend
+ *      The backend for which to pause recording the thread state.
+ */
+extern JIT_EXPORT bool jit_freeze_resume(JitBackend backend);
+
+/**
+ * \brief Abort recording the ThreadState for this backend.
+ *      This will swap out the RecordThreadState for it's
+ *      internal thread state, without saving the recording.
+ *
+ * \param backend
+ *      The backend for which to abort recording the thread state.
+ */
+extern JIT_EXPORT void jit_freeze_abort(JitBackend backend);
+
+/**
+ * \brief Destroys a recording and frees the asociated memory.
+ *
+ * \param recording
+ *      The recording to destroy.
+ */
+extern JIT_EXPORT void jit_freeze_destroy(Recording *recording);
+
 #if defined(__cplusplus)
 }
 #endif
