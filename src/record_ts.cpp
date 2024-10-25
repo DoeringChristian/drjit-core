@@ -347,13 +347,13 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                         uses_optix = false;
                 }
 
-            }
+            };
             break;
             case OpType::Barrier: {
                 ProfilerPhase profiler(pr_barrier);
                 if (!dry_run)
                     ts->barrier();
-            }
+            };
             break;
             case OpType::MemsetAsync: {
                 ProfilerPhase profiler(pr_memset_async);
@@ -375,7 +375,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 if (!dry_run)
                     ts->memset_async(ptr_var.data, size, op.input_size,
                                      &op.data);
-            }
+            };
             break;
             case OpType::ReduceExpanded: {
                 ProfilerPhase profiler(pr_reduce_expanded);
@@ -400,7 +400,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                     ts->reduce_expanded(vt, rop, data_var.data,
                                         replication_per_worker * workers, size);
 
-            }
+            };
             break;
             case OpType::Expand: {
                 ProfilerPhase profiler(pr_expand);
@@ -458,7 +458,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
                 dst_rv.data_size = size * type_size[(uint32_t) dst_info.vtype];
                 // dst_rv.size = size;
-            }
+            };
             break;
             case OpType::Compress: {
                 ProfilerPhase profiler(pr_compress);
@@ -483,7 +483,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
                 out_rv.data_size =
                     out_size * type_size[(uint32_t) out_info.vtype];
-            }
+            };
             break;
             case OpType::MemcpyAsync: {
                 ProfilerPhase profiler(pr_memset_async);
@@ -508,7 +508,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 if (!dry_run)
                     ts->memcpy_async(dst_var.data, src_var.data,
                                      src_var.data_size);
-            }
+            };
             break;
             case OpType::Mkperm: {
                 ProfilerPhase profiler(pr_mkperm);
@@ -549,7 +549,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                                (uint32_t *) perm_var.data,
                                (uint32_t *) offsets_var.data);
 
-            }
+            };
             break;
             case OpType::BlockReduce: {
                 ProfilerPhase profiler(pr_block_reduce);
@@ -581,7 +581,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                     ts->block_reduce(out_info.vtype, op.rtype, size, block_size,
                                      in_var.data, out_var.data);
 
-            }
+            };
             break;
             case OpType::BlockPrefixReduce: {
                 ProfilerPhase profiler(pr_block_reduce);
@@ -615,7 +615,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                         block_size, op.prefix_reduce.exclusive,
                         op.prefix_reduce.reverse, in_var.data, out_var.data);
 
-            }
+            };
             break;
             case OpType::Aggregate: {
                 ProfilerPhase profiler(pr_aggregate);
@@ -692,7 +692,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 if (!dry_run)
                     ts->aggregate(dst_rv.data, agg, (uint32_t) (p - agg));
 
-            }
+            };
             break;
             case OpType::Free: {
                 ProfilerPhase profiler(pr_free);
@@ -703,7 +703,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
                 rv.free();
 
-            }
+            };
             break;
             default:
                 jitc_fail(
