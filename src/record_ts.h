@@ -759,8 +759,8 @@ private:
         }
     }
 
-    // Return the slot index given the data pointer of a variable.
-    // This fails if the variable has not been added.
+    /// Return the slot index given the data pointer of a variable.
+    /// This fails if the variable has not been added.
     uint32_t get_variable(const void *ptr) {
         auto it = this->ptr_to_slot.find(ptr);
 
@@ -772,6 +772,7 @@ private:
         return it.value();
     }
 
+    /// Test if the ThreadState knows this \c ptr
     bool has_variable(const void *ptr) {
         auto it = this->ptr_to_slot.find(ptr);
 
@@ -799,10 +800,12 @@ private:
             jitc_log(LogLevel::Debug, " -> param s%u", info.slot);
 
             if (info.test_uninit && rv.state == RecordVarState::Uninit)
-                jitc_fail("record(): Varaible at slot s%u was read from by "
-                          "operation o%u, but has not yet been initialized!",
-                          info.slot,
-                          (uint32_t) this->m_recording.operations.size());
+                jitc_raise("record(): Varaible at slot s%u was read from by "
+                           "operation o%u, but has not yet been initialized! "
+                           "This can happen if the variable was not part of "
+                           "the input but is used by an recorded operation.",
+                           info.slot,
+                           (uint32_t) this->m_recording.operations.size());
 
             if (info.vtype == VarType::Void)
                 info.vtype = rv.type;
