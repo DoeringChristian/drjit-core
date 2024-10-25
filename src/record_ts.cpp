@@ -267,7 +267,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                     if (op.size > op.input_size &&
                         (op.size % op.input_size == 0)) {
                         uint32_t ratio = op.size / op.input_size;
-                        
+
                         jitc_log(
                             LogLevel::Debug,
                             "replay(): Inferring launch size by heuristic, "
@@ -306,9 +306,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                                  " -> param s%u is_pointer=%u size=%u",
                                  info.slot, info.pointer_access, size);
                     } else {
-                        jitc_log(LogLevel::Info,
-                                 " <- param s%u is_pointer=%u", info.slot,
-                                 info.pointer_access);
+                        jitc_log(LogLevel::Info, " <- param s%u is_pointer=%u",
+                                 info.slot, info.pointer_access);
                     }
 
                     if (info.type == ParamType::Output) {
@@ -349,13 +348,13 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 }
 
             }
-
             break;
             case OpType::Barrier: {
                 ProfilerPhase profiler(pr_barrier);
                 if (!dry_run)
                     ts->barrier();
-            } break;
+            }
+            break;
             case OpType::MemsetAsync: {
                 ProfilerPhase profiler(pr_memset_async);
 
@@ -376,7 +375,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 if (!dry_run)
                     ts->memset_async(ptr_var.data, size, op.input_size,
                                      &op.data);
-            } break;
+            }
+            break;
             case OpType::ReduceExpanded: {
                 ProfilerPhase profiler(pr_reduce_expanded);
 
@@ -400,7 +400,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                     ts->reduce_expanded(vt, rop, data_var.data,
                                         replication_per_worker * workers, size);
 
-            } break;
+            }
+            break;
             case OpType::Expand: {
                 ProfilerPhase profiler(pr_expand);
 
@@ -457,7 +458,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
                 dst_rv.data_size = size * type_size[(uint32_t) dst_info.vtype];
                 // dst_rv.size = size;
-            } break;
+            }
+            break;
             case OpType::Compress: {
                 ProfilerPhase profiler(pr_compress);
 
@@ -481,7 +483,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
                 out_rv.data_size =
                     out_size * type_size[(uint32_t) out_info.vtype];
-            } break;
+            }
+            break;
             case OpType::MemcpyAsync: {
                 ProfilerPhase profiler(pr_memset_async);
 
@@ -505,7 +508,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 if (!dry_run)
                     ts->memcpy_async(dst_var.data, src_var.data,
                                      src_var.data_size);
-            } break;
+            }
+            break;
             case OpType::Mkperm: {
                 ProfilerPhase profiler(pr_mkperm);
 
@@ -524,15 +528,13 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 uint32_t size         = values_var.size(values_info.vtype);
                 uint32_t bucket_count = op.bucket_count;
 
-                jitc_log(LogLevel::Info,
-                         " -> values: s%u data=%p size=%u",
+                jitc_log(LogLevel::Info, " -> values: s%u data=%p size=%u",
                          values_info.slot, values_var.data, size);
 
                 jitc_log(LogLevel::Info, " <- perm: s%u", perm_info.slot);
                 perm_var.alloc(backend, size, perm_info.vtype);
 
-                jitc_log(LogLevel::Info, " <- offsets: s%u",
-                         offsets_info.slot);
+                jitc_log(LogLevel::Info, " <- offsets: s%u", offsets_info.slot);
                 offsets_var.alloc(backend, bucket_count * 4 + 1,
                                   offsets_info.vtype);
 
@@ -547,7 +549,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                                (uint32_t *) perm_var.data,
                                (uint32_t *) offsets_var.data);
 
-            } break;
+            }
+            break;
             case OpType::BlockReduce: {
                 ProfilerPhase profiler(pr_block_reduce);
 
@@ -578,7 +581,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                     ts->block_reduce(out_info.vtype, op.rtype, size, block_size,
                                      in_var.data, out_var.data);
 
-            } break;
+            }
+            break;
             case OpType::BlockPrefixReduce: {
                 ProfilerPhase profiler(pr_block_reduce);
 
@@ -611,7 +615,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                         block_size, op.prefix_reduce.exclusive,
                         op.prefix_reduce.reverse, in_var.data, out_var.data);
 
-            } break;
+            }
+            break;
             case OpType::Aggregate: {
                 ProfilerPhase profiler(pr_aggregate);
 
@@ -640,9 +645,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                     if (param.type == ParamType::Input) {
                         ReplayVariable &rv = replay_variables[param.slot];
                         jitc_log(LogLevel::Debug,
-                                 " -> s%u is_pointer=%u offset=%u",
-                                 param.slot, param.pointer_access,
-                                 param.extra.offset);
+                                 " -> s%u is_pointer=%u offset=%u", param.slot,
+                                 param.pointer_access, param.extra.offset);
 
                         if (rv.init == RecordVarInit::Captured) {
                             jitc_log(LogLevel::Debug, "    captured");
@@ -679,9 +683,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 dst_rv.alloc(backend, data_size, VarType::UInt8);
 
                 jitc_log(LogLevel::Debug,
-                         " <- s%u is_pointer=%u data=%p size=%u",
-                         dst_info.slot, dst_info.pointer_access, dst_rv.data,
-                         data_size);
+                         " <- s%u is_pointer=%u data=%p size=%u", dst_info.slot,
+                         dst_info.pointer_access, dst_rv.data, data_size);
 
                 jitc_assert(dst_rv.data != nullptr || dry_run,
                             "replay(): Error allocating dst.");
@@ -689,7 +692,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 if (!dry_run)
                     ts->aggregate(dst_rv.data, agg, (uint32_t) (p - agg));
 
-            } break;
+            }
+            break;
             case OpType::Free: {
                 ProfilerPhase profiler(pr_free);
 
@@ -699,7 +703,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
                 rv.free();
 
-            } break;
+            }
+            break;
             default:
                 jitc_fail(
                     "An operation has been recorded, that is not known to "
@@ -717,8 +722,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
     // Create output variables
     jitc_log(LogLevel::Debug, "replay(): creating outputs");
     for (uint32_t i = 0; i < this->outputs.size(); ++i) {
-        ParamInfo info = this->outputs[i];
-        uint32_t slot  = info.slot;
+        ParamInfo info     = this->outputs[i];
+        uint32_t slot      = info.slot;
         ReplayVariable &rv = replay_variables[slot];
 
         if (rv.init == RecordVarInit::Input) {
@@ -749,17 +754,16 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                                           rv.size(info.vtype), true);
         }
     }
-    
+
     // Set data to nullptr for next step, where we free all remaining
     // temporary variables
     for (uint32_t i = 0; i < this->outputs.size(); ++i) {
-        ParamInfo info = this->outputs[i];
-        uint32_t slot  = info.slot;
+        ParamInfo info     = this->outputs[i];
+        uint32_t slot      = info.slot;
         ReplayVariable &rv = replay_variables[slot];
-        
+
         rv.data = nullptr;
     }
-
 
     for (ReplayVariable &rv : replay_variables) {
         if (rv.init == RecordVarInit::Captured) {
