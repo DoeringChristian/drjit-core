@@ -296,7 +296,8 @@ TEST_BOTH(05_sequential_kernels) {
 }
 
 /**
- * This tests, weather it is possible to record multiple kernels in parallel.
+ * This tests, weather it is possible to record multiple independent kernels in
+ * the same recording.
  * The variables of the kernels are of different size, therefore two kernels are
  * generated. At replay these can be executed in parallel (LLVM) or sequence
  * (CUDA).
@@ -362,7 +363,8 @@ TEST_BOTH(06_parallel_kernels) {
 }
 
 /**
- * This tests recording and replay of a horizontal reduction operation (hsum).
+ * This tests the recording and replay of a horizontal reduction operation
+ * (hsum).
  */
 TEST_BOTH(07_reduce_hsum) {
     Recording *recording;
@@ -370,7 +372,7 @@ TEST_BOTH(07_reduce_hsum) {
     jit_log(LogLevel::Info, "Recording:");
     {
         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-        UInt32 r0 = opaque<UInt32>(45, 1);
+        UInt32 r0 = opaque<UInt32>(55, 1);
 
         uint32_t inputs[] = {
             i0.index(),
@@ -378,7 +380,9 @@ TEST_BOTH(07_reduce_hsum) {
 
         jit_freeze_start(Backend, inputs, 1);
 
-        UInt32 o0 = hsum(i0);
+        UInt32 tmp = i0 + 1;
+
+        UInt32 o0 = hsum(tmp);
         o0.schedule();
         jit_eval();
 
@@ -395,7 +399,7 @@ TEST_BOTH(07_reduce_hsum) {
     jit_log(LogLevel::Info, "Replay:");
     {
         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-        UInt32 r0 = opaque<UInt32>(55, 1);
+        UInt32 r0 = opaque<UInt32>(65, 1);
 
         uint32_t inputs[] = {
             i0.index(),
@@ -508,6 +512,10 @@ TEST_BOTH(9_resized_input) {
     jit_freeze_destroy(recording);
 }
 
+/**
+ * Tests that it is possible to pass a single input to multiple outputs in a
+ * frozen thread state without any use after free conditions.
+ */
 TEST_BOTH(10_input_passthrough) {
     Recording *recording;
 

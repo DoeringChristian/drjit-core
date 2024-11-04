@@ -1296,18 +1296,19 @@ TEST_BOTH(14_kernel_record) {
 
     {
         BasePtr self = arange<UInt32>(10) % 3;
-        self.eval();
         UInt32 i0 = arange<UInt32>(10);
-        i0.eval();
         UInt32 r0(0, 2, 4, 0, 5, 7, 0, 8, 10, 0);
 
         jit_log(LogLevel::Info, "Recording:");
 
+        // This function does not perform any validation on the input.
+        // The input should however be evaluated before starting freezing.
+        self.eval();
+        i0.eval();
         uint32_t inputs[] = {
             self.index(),
             i0.index(),
         };
-
         jit_freeze_start(Backend, inputs, 2);
 
         uint32_t outputs[1];
@@ -1344,11 +1345,18 @@ TEST_BOTH(14_kernel_record) {
 
     jit_log(LogLevel::Info, "Replay:");
     {
-        BasePtr self = (arange<UInt32>(10) + 1) % 3;
+        /**
+         * Between recording and replay, the registry has to stay the same i.e.
+         * instances should not be added or removed.
+         * This is ensured by the implementation in drjit.
+         * The behavior is undefined if instances are added or removed between
+         * recording and replay.
+         */
+        BasePtr self = (arange<UInt32>(11) + 1) % 3;
         self.eval();
-        UInt32 i0 = arange<UInt32>(10);
+        UInt32 i0 = arange<UInt32>(11);
         i0.eval();
-        UInt32 r0(1, 3, 0, 4, 6, 0, 7, 9, 0, 10);
+        UInt32 r0(1, 3, 0, 4, 6, 0, 7, 9, 0, 10, 12);
 
         uint32_t inputs[] = {
             self.index(),
