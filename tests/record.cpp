@@ -11,7 +11,7 @@
 TEST_BOTH(01_basic_replay) {
     Recording *recording;
 
-    jit_log(LogLevel::Info, "Recording:");
+    jit_log(LogLevel::Debug, "Recording:");
     {
         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
         UInt32 r0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
@@ -27,11 +27,11 @@ TEST_BOTH(01_basic_replay) {
 
         recording = jit_freeze_stop(Backend, outputs, 1);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
     }
 
-    jit_log(LogLevel::Info, "Replay:");
+    jit_log(LogLevel::Debug, "Replay:");
     {
         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
         UInt32 r0(2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
@@ -41,7 +41,7 @@ TEST_BOTH(01_basic_replay) {
 
         jit_freeze_replay(recording, inputs, outputs);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
     }
 
@@ -54,7 +54,7 @@ TEST_BOTH(01_basic_replay) {
 TEST_BOTH(02_MIMO) {
     Recording *recording;
 
-    jit_log(LogLevel::Info, "Recording:");
+    jit_log(LogLevel::Debug, "Recording:");
     {
         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
         UInt32 i1(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
@@ -81,13 +81,13 @@ TEST_BOTH(02_MIMO) {
 
         recording = jit_freeze_stop(Backend, outputs, 2);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
-        jit_log(LogLevel::Info, "o1: %s", jit_var_str(outputs[1]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
     }
 
-    jit_log(LogLevel::Info, "Replay:");
+    jit_log(LogLevel::Debug, "Replay:");
     {
         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
         UInt32 i1(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
@@ -102,8 +102,8 @@ TEST_BOTH(02_MIMO) {
 
         jit_freeze_replay(recording, inputs, outputs);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
-        jit_log(LogLevel::Info, "o1: %s", jit_var_str(outputs[1]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
     }
@@ -119,7 +119,7 @@ TEST_BOTH(02_MIMO) {
 TEST_BOTH(03_deduplicating_input) {
     Recording *recording;
 
-    jit_log(LogLevel::Info, "Recording:");
+    jit_log(LogLevel::Debug, "Recording:");
     {
         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
         UInt32 r0(0, 2, 4, 6, 8, 10, 12, 14, 16, 18);
@@ -145,13 +145,13 @@ TEST_BOTH(03_deduplicating_input) {
 
         recording = jit_freeze_stop(Backend, outputs, 2);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
-        jit_log(LogLevel::Info, "o1: %s", jit_var_str(outputs[1]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
     }
 
-    jit_log(LogLevel::Info, "Replay:");
+    jit_log(LogLevel::Debug, "Replay:");
     {
         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
         UInt32 r0(2, 4, 6, 8, 10, 12, 14, 16, 18, 20);
@@ -165,8 +165,8 @@ TEST_BOTH(03_deduplicating_input) {
 
         jit_freeze_replay(recording, inputs, outputs);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
-        jit_log(LogLevel::Info, "o1: %s", jit_var_str(outputs[1]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
     }
@@ -183,7 +183,7 @@ TEST_BOTH(04_deduplicating_output) {
     Recording *recording;
     jit_set_log_level_stderr(LogLevel::Debug);
 
-    jit_log(LogLevel::Info, "Recording:");
+    jit_log(LogLevel::Debug, "Recording:");
     {
         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
         UInt32 i1(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
@@ -210,13 +210,13 @@ TEST_BOTH(04_deduplicating_output) {
 
         recording = jit_freeze_stop(Backend, outputs, 2);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
-        jit_log(LogLevel::Info, "o1: %s", jit_var_str(outputs[1]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
     }
 
-    jit_log(LogLevel::Info, "Replay:");
+    jit_log(LogLevel::Debug, "Replay:");
     {
         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
         UInt32 i1(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
@@ -231,8 +231,8 @@ TEST_BOTH(04_deduplicating_output) {
 
         jit_freeze_replay(recording, inputs, outputs);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
-        jit_log(LogLevel::Info, "o1: %s", jit_var_str(outputs[1]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
     }
@@ -241,14 +241,14 @@ TEST_BOTH(04_deduplicating_output) {
 }
 
 /**
- * This tests, weather it is possible to record multiple kernels in sequence.
+ * This tests, Whether it is possible to record multiple kernels in sequence.
  * The input of the second kernel relies on the execution of the first.
  * On LLVM, the correctness of barrier operations is therefore tested.
  */
 TEST_BOTH(05_sequential_kernels) {
     Recording *recording;
 
-    jit_log(LogLevel::Info, "Recording:");
+    jit_log(LogLevel::Debug, "Recording:");
     {
         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
         UInt32 r0(2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
@@ -272,11 +272,11 @@ TEST_BOTH(05_sequential_kernels) {
 
         recording = jit_freeze_stop(Backend, outputs, 1);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
     }
 
-    jit_log(LogLevel::Info, "Replay:");
+    jit_log(LogLevel::Debug, "Replay:");
     {
         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
         UInt32 r0(2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
@@ -288,7 +288,7 @@ TEST_BOTH(05_sequential_kernels) {
 
         jit_freeze_replay(recording, inputs, outputs);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
     }
 
@@ -296,7 +296,7 @@ TEST_BOTH(05_sequential_kernels) {
 }
 
 /**
- * This tests, weather it is possible to record multiple independent kernels in
+ * This tests, Whether it is possible to record multiple independent kernels in
  * the same recording.
  * The variables of the kernels are of different size, therefore two kernels are
  * generated. At replay these can be executed in parallel (LLVM) or sequence
@@ -305,7 +305,7 @@ TEST_BOTH(05_sequential_kernels) {
 TEST_BOTH(06_parallel_kernels) {
     Recording *recording;
 
-    jit_log(LogLevel::Info, "Recording:");
+    jit_log(LogLevel::Debug, "Recording:");
     {
         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
         UInt32 i1(0, 1, 2, 3, 4, 5);
@@ -332,13 +332,13 @@ TEST_BOTH(06_parallel_kernels) {
 
         recording = jit_freeze_stop(Backend, outputs, 2);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
-        jit_log(LogLevel::Info, "o1: %s", jit_var_str(outputs[1]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
     }
 
-    jit_log(LogLevel::Info, "Replay:");
+    jit_log(LogLevel::Debug, "Replay:");
     {
         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
         UInt32 i1(1, 2, 3, 4, 5, 6);
@@ -353,8 +353,8 @@ TEST_BOTH(06_parallel_kernels) {
 
         jit_freeze_replay(recording, inputs, outputs);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
-        jit_log(LogLevel::Info, "o1: %s", jit_var_str(outputs[1]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
     }
@@ -369,7 +369,7 @@ TEST_BOTH(06_parallel_kernels) {
 TEST_BOTH(07_reduce_hsum) {
     Recording *recording;
 
-    jit_log(LogLevel::Info, "Recording:");
+    jit_log(LogLevel::Debug, "Recording:");
     {
         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
         UInt32 r0 = opaque<UInt32>(55, 1);
@@ -392,11 +392,11 @@ TEST_BOTH(07_reduce_hsum) {
 
         recording = jit_freeze_stop(Backend, outputs, 1);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
     }
 
-    jit_log(LogLevel::Info, "Replay:");
+    jit_log(LogLevel::Debug, "Replay:");
     {
         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
         UInt32 r0 = opaque<UInt32>(65, 1);
@@ -408,7 +408,7 @@ TEST_BOTH(07_reduce_hsum) {
 
         jit_freeze_replay(recording, inputs, outputs);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
     }
 
@@ -421,7 +421,7 @@ TEST_BOTH(07_reduce_hsum) {
 TEST_BOTH(08_prefix_sum) {
     Recording *recording;
 
-    jit_log(LogLevel::Info, "Recording:");
+    jit_log(LogLevel::Debug, "Recording:");
     {
         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
         UInt32 r0(0, 1, 3, 6, 10, 15, 21, 28, 36, 45);
@@ -443,11 +443,11 @@ TEST_BOTH(08_prefix_sum) {
 
         recording = jit_freeze_stop(Backend, outputs, 1);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
     }
 
-    jit_log(LogLevel::Info, "Replay:");
+    jit_log(LogLevel::Debug, "Replay:");
     {
         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
         UInt32 r0(1, 3, 6, 10, 15, 21, 28, 36, 45, 55);
@@ -459,7 +459,7 @@ TEST_BOTH(08_prefix_sum) {
 
         jit_freeze_replay(recording, inputs, outputs);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
     }
 
@@ -475,7 +475,7 @@ TEST_BOTH(08_prefix_sum) {
 TEST_BOTH(9_resized_input) {
     Recording *recording;
 
-    jit_log(LogLevel::Info, "Recording:");
+    jit_log(LogLevel::Debug, "Recording:");
     {
         UInt32 i0(0, 1, 2);
         UInt32 r0(1, 2, 3);
@@ -491,11 +491,11 @@ TEST_BOTH(9_resized_input) {
 
         recording = jit_freeze_stop(Backend, outputs, 1);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
     }
 
-    jit_log(LogLevel::Info, "Replay:");
+    jit_log(LogLevel::Debug, "Replay:");
     {
         UInt32 i0(1, 2, 3, 4);
         UInt32 r0(2, 3, 4, 5);
@@ -505,7 +505,7 @@ TEST_BOTH(9_resized_input) {
 
         jit_freeze_replay(recording, inputs, outputs);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
     }
 
@@ -519,7 +519,7 @@ TEST_BOTH(9_resized_input) {
 TEST_BOTH(10_input_passthrough) {
     Recording *recording;
 
-    jit_log(LogLevel::Info, "Recording:");
+    jit_log(LogLevel::Debug, "Recording:");
     {
         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
         UInt32 r0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
@@ -535,13 +535,13 @@ TEST_BOTH(10_input_passthrough) {
 
         recording = jit_freeze_stop(Backend, outputs, 2);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
-        jit_log(LogLevel::Info, "o1: %s", jit_var_str(outputs[1]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
         jit_assert(jit_var_all(jit_var_eq(i0.index(), outputs[1])));
     }
 
-    jit_log(LogLevel::Info, "Replay:");
+    jit_log(LogLevel::Debug, "Replay:");
     {
         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
         UInt32 r0(2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
@@ -551,8 +551,8 @@ TEST_BOTH(10_input_passthrough) {
 
         jit_freeze_replay(recording, inputs, outputs);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
-        jit_log(LogLevel::Info, "o1: %s", jit_var_str(outputs[1]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
         jit_assert(jit_var_all(jit_var_eq(i0.index(), outputs[1])));
     }

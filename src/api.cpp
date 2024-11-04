@@ -1516,12 +1516,12 @@ Recording *jit_freeze_stop(JitBackend backend, const uint32_t *outputs,
     return jitc_freeze_stop(backend, outputs, n_outputs);
 }
 
-bool jit_freeze_pause(JitBackend backend) {
+int jit_freeze_pause(JitBackend backend) {
     lock_guard guard(state.lock);
     return jitc_freeze_pause(backend);
 }
 
-bool jit_freeze_resume(JitBackend backend) {
+int jit_freeze_resume(JitBackend backend) {
     lock_guard guard(state.lock);
     return jitc_freeze_resume(backend);
 }

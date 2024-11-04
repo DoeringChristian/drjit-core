@@ -26,14 +26,14 @@ struct ReplayVariable {
     // Tracks the size in bytes, of this allocation
     size_t data_size = 0;
     uint32_t index;
-    RecordVarInit init;
+    RecordedVarInit init;
 
-    ReplayVariable(RecordVariable &rv) {
+    ReplayVariable(RecordedVariable &rv) {
         this->index = rv.index;
 
         this->init = rv.init;
 
-        if (init == RecordVarInit::Captured) {
+        if (init == RecordedVarInit::Captured) {
             // copy the variable, so that it isn't changed
             this->index = jitc_var_copy(this->index);
 
@@ -90,7 +90,7 @@ struct ReplayVariable {
     }
     /**
      * Allocates the data for this replay variable.
-     * If this is attempted twice, we test weather the allocated size is
+     * If this is attempted twice, we test Whether the allocated size is
      * sufficient and re-allocate the memory if necessary.
      */
     void alloc(JitBackend backend, size_t dsize) {
@@ -160,8 +160,8 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
     replay_variables.clear();
 
-    replay_variables.reserve(this->record_variables.size());
-    for (RecordVariable &rv : this->record_variables) {
+    replay_variables.reserve(this->recorded_variables.size());
+    for (RecordedVariable &rv : this->recorded_variables) {
         replay_variables.push_back(ReplayVariable(rv));
     }
 
@@ -474,9 +474,15 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 uint32_t size = in_rv.size(in_info.vtype);
                 out_rv.alloc(backend, size, out_info.vtype);
 
-                if (dry_run)
-                    jitc_fail(
+                if (dry_run){
+                    jitc_log(
+                        LogLevel::Warn,
                         "replay(): dry_run compress operation not supported!");
+                    // We return false (the dry run failed), which causes a
+                    // re-recording of the frozen function.
+                    return false;
+                }
+                
 
                 uint32_t out_size = ts->compress((uint8_t *) in_rv.data, size,
                                                  (uint32_t *) out_rv.data);
@@ -648,7 +654,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                                  " -> s%u is_pointer=%u offset=%u", param.slot,
                                  param.pointer_access, param.extra.offset);
 
-                        if (rv.init == RecordVarInit::Captured) {
+                        if (rv.init == RecordedVarInit::Captured) {
                             jitc_log(LogLevel::Debug, "    captured");
                             jitc_log(LogLevel::Debug, "    label=%s",
                                      jitc_var_label(rv.index));
@@ -726,7 +732,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
         uint32_t slot      = info.slot;
         ReplayVariable &rv = replay_variables[slot];
 
-        if (rv.init == RecordVarInit::Input) {
+        if (rv.init == RecordedVarInit::Input) {
             // Use input variable
             jitc_log(LogLevel::Debug,
                      "    output %u: from slot s%u = input[%u]", i, slot,
@@ -736,7 +742,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
             uint32_t var_index = replay_inputs[rv.index];
             jitc_var_inc_ref(var_index);
             outputs[i] = var_index;
-        } else if (rv.init == RecordVarInit::Captured) {
+        } else if (rv.init == RecordedVarInit::Captured) {
             jitc_log(LogLevel::Debug,
                      "    output %u: from slot s%u = captured[%u]", i, slot,
                      rv.index);
@@ -766,10 +772,10 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
     }
 
     for (ReplayVariable &rv : replay_variables) {
-        if (rv.init == RecordVarInit::Captured) {
+        if (rv.init == RecordedVarInit::Captured) {
             jitc_var_dec_ref(rv.index);
             rv.data = 0;
-        } else if (rv.init == RecordVarInit::None && rv.data) {
+        } else if (rv.init == RecordedVarInit::None && rv.data) {
             rv.free();
         }
     }
@@ -777,11 +783,319 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
     return true;
 }
 
+void RecordThreadState::barrier() {
+    if (!paused()) {
+        uint32_t start = this->m_recording.dependencies.size();
+
+        Operation op;
+        op.type             = OpType::Barrier;
+        op.dependency_range = std::pair(start, start);
+        this->m_recording.operations.push_back(op);
+    }
+
+    pause_scope pause(this);
+    return this->m_internal->barrier();
+}
+
+Task *RecordThreadState::launch(Kernel kernel, KernelKey *key,
+                                XXH128_hash_t hash, uint32_t size,
+                                std::vector<void *> *kernel_params,
+                                const std::vector<uint32_t> *kernel_param_ids) {
+    if (!paused()) {
+        try {
+            record_launch(kernel, key, hash, size, kernel_params,
+                          kernel_param_ids);
+        } catch (...) {
+            record_exception();
+        }
+    }
+    pause_scope pause(this);
+    return this->m_internal->launch(kernel, key, hash, size, kernel_params,
+                                    kernel_param_ids);
+}
+
+/// Fill a device memory region with constants of a given type
+void RecordThreadState::memset_async(void *ptr, uint32_t size, uint32_t isize,
+                                     const void *src) {
+    if (!paused()) {
+        try {
+            record_memset_async(ptr, size, isize, src);
+        } catch (...) {
+            record_exception();
+        }
+    }
+    pause_scope pause(this);
+    return this->m_internal->memset_async(ptr, size, isize, src);
+}
+
+/// Mask compression
+uint32_t RecordThreadState::compress(const uint8_t *in, uint32_t size,
+                                     uint32_t *out) {
+    if (!paused()) {
+        try {
+            record_compress(in, size, out);
+        } catch (...) {
+            record_exception();
+        }
+    }
+    pause_scope pause(this);
+    return this->m_internal->compress(in, size, out);
+}
+
+/// Compute a permutation to reorder an integer array into discrete groups
+uint32_t RecordThreadState::mkperm(const uint32_t *values, uint32_t size,
+                                   uint32_t bucket_count, uint32_t *perm,
+                                   uint32_t *offsets) {
+    if (!paused()) {
+        try {
+            record_mkperm(values, size, bucket_count, perm, offsets);
+        } catch (...) {
+            record_exception();
+        }
+    }
+    pause_scope pause(this);
+    return this->m_internal->mkperm(values, size, bucket_count, perm, offsets);
+}
+
+/// Perform a synchronous copy operation
+void RecordThreadState::memcpy(void *dst, const void *src, size_t size) {
+    jitc_log(LogLevel::Debug, "record(): memcpy(dst=%p, src=%p, size=%zu)", dst,
+             src, size);
+    pause_scope pause(this);
+    return this->m_internal->memcpy(dst, src, size);
+}
+
+/// Perform an asynchronous copy operation
+void RecordThreadState::memcpy_async(void *dst, const void *src, size_t size) {
+    jitc_log(LogLevel::Debug,
+             "record(): memcpy_async(dst=%p, src=%p, size=%zu)", dst, src,
+             size);
+    bool has_var = has_variable(src);
+    if (!paused() && has_var) {
+
+        uint32_t src_id;
+        src_id = this->get_variable(src);
+
+        RecordedVariable rv;
+        rv.last_memcpy  = this->m_recording.operations.size() + 1;
+        uint32_t dst_id = this->add_variable(dst, rv);
+
+        uint32_t start = this->m_recording.dependencies.size();
+        add_in_param(src_id);
+        add_out_param(dst_id,
+                      this->m_recording.recorded_variables[src_id].type);
+        uint32_t end = this->m_recording.dependencies.size();
+
+        Operation op;
+        op.type             = OpType::MemcpyAsync;
+        op.dependency_range = std::pair(start, end);
+        op.size             = size;
+        this->m_recording.operations.push_back(op);
+    }
+    {
+        pause_scope pause(this);
+        this->m_internal->memcpy_async(dst, src, size);
+    }
+    if (!paused() && !has_var) {
+        // If we did not know the source variable, this memcpy might be
+        // coming from \c jitc_call_upload.
+        // If that is the case, we have to capture the offset buffer.
+        // Since the pointer might be used, for example by an aggregate call
+        // (nested calls), we have to overwrite the RecordedVariable.
+        CallData *call = nullptr;
+        for (CallData *tmp : calls_assembled) {
+            if (tmp->offset == dst) {
+                call = tmp;
+                break;
+            }
+        }
+        if (call) {
+            capture_call_offset(dst, size);
+            jitc_log(LogLevel::Debug, "    captured call offset");
+        } else {
+            jitc_raise("record(): Tried to record a memcpy_async operation, "
+                       "but the source pointer %p was not known.",
+                       src);
+        }
+    }
+}
+
+/// Sum over elements within blocks
+void RecordThreadState::block_reduce(VarType vt, ReduceOp op, uint32_t size,
+                                     uint32_t block_size, const void *in,
+                                     void *out) {
+    if (!paused()) {
+        try {
+            record_block_reduce(vt, op, size, block_size, in, out);
+        } catch (...) {
+            record_exception();
+        }
+    }
+    pause_scope pause(this);
+    return this->m_internal->block_reduce(vt, op, size, block_size, in, out);
+}
+
+void RecordThreadState::block_prefix_reduce(VarType vt, ReduceOp op,
+                                            uint32_t size, uint32_t block_size,
+                                            bool exclusive, bool reverse,
+                                            const void *in, void *out) {
+    if (!paused()) {
+        try {
+            record_block_prefix_reduce(vt, op, size, block_size, exclusive,
+                                       reverse, in, out);
+        } catch (...) {
+            record_exception();
+        }
+    }
+    pause_scope pause(this);
+    return this->m_internal->block_prefix_reduce(vt, op, size, block_size,
+                                                 exclusive, reverse, in, out);
+}
+
+/// Compute a dot product of two equal-sized arrays
+void RecordThreadState::reduce_dot(VarType type, const void *ptr_1,
+                                   const void *ptr_2, uint32_t size,
+                                   void *out) {
+    jitc_raise("RecordThreadState::reduce_dot(): unsupported function recording!");
+    pause_scope pause(this);
+    return this->m_internal->reduce_dot(type, ptr_1, ptr_2, size, out);
+}
+
+/// Asynchronously update a single element in memory
+void RecordThreadState::poke(void *dst, const void *src, uint32_t size) {
+    jitc_raise("RecordThreadState::poke(): unsupported function recording!");
+    pause_scope pause(this);
+    return this->m_internal->poke(dst, src, size);
+}
+
+void RecordThreadState::aggregate(void *dst, AggregationEntry *agg,
+                                  uint32_t size) {
+    if (!paused()) {
+        try {
+            record_aggregate(dst, agg, size);
+        } catch (...) {
+            record_exception();
+        }
+    }
+    pause_scope pause(this);
+    this->m_internal->aggregate(dst, agg, size);
+}
+
+// Enqueue a function to be run on the host once backend computation is done
+void RecordThreadState::enqueue_host_func(void (*callback)(void *),
+                                          void *payload) {
+    pause_scope pause(this);
+    return this->m_internal->enqueue_host_func(callback, payload);
+}
+
+/// LLVM: reduce a variable that was previously expanded due to
+/// dr.ReduceOp.Expand
+void RecordThreadState::reduce_expanded(VarType vt, ReduceOp reduce_op,
+                                        void *data, uint32_t exp,
+                                        uint32_t size) {
+    if (!paused()) {
+        try {
+            record_reduce_expanded(vt, reduce_op, data, exp, size);
+        } catch (...) {
+            record_exception();
+        }
+    }
+    pause_scope pause(this);
+    return this->m_internal->reduce_expanded(vt, reduce_op, data, exp, size);
+}
+
+/**
+ * This function is called every time a pointer is freed using \ref
+ * jitc_free. It records the operation and removes the mapping from that
+ * pointer to the recorded variable.
+ * If the pointer is reused later by another call to \ref jitc_malloc, the
+ * \ref RecordThreadState.add_variable function will create a new variable
+ * and mapping from the pointer to it.
+ */
+void RecordThreadState::notify_free(const void *ptr) {
+    if (has_variable(ptr)) {
+        jitc_log(LogLevel::Debug, "record(): jitc_free(ptr=%p)", ptr);
+
+        uint32_t start = this->m_recording.dependencies.size();
+        add_in_param(ptr, VarType::Void, false);
+        uint32_t end = this->m_recording.dependencies.size();
+
+        Operation op;
+        op.type             = OpType::Free;
+        op.dependency_range = std::pair(start, end);
+
+        this->ptr_to_slot.erase(ptr);
+    }
+}
+
+/**
+ * Adds an input of the recording.
+ * This is adds the slot of that variable to the \ref Recording.inputs
+ * vector.
+ */
+void RecordThreadState::add_input(uint32_t input) {
+    try {
+        uint32_t input_index = this->m_recording.inputs.size();
+        Variable *v          = jitc_var(input);
+        RecordedVariable rv;
+        rv.state      = RecordedVarState::Input;
+        rv.init       = RecordedVarInit::Input;
+        rv.index      = input_index;
+        rv.type       = (VarType) v->type;
+        uint32_t slot = this->add_variable(v->data, rv);
+        jitc_log(LogLevel::Debug,
+                 "record(): Adding variable %u <%p> input %u to slot s%u",
+                 input, v->data, input_index, slot);
+        this->m_recording.inputs.push_back(slot);
+    } catch (...) {
+        record_exception();
+    }
+}
+/**
+ * Adds an output to the recording.
+ * The output can be seen as a final operation, which also has to infer the
+ * size of its input variables.
+ * Therefore, we record the full \ref ParamInfo for each output variable.
+ */
+void RecordThreadState::add_output(uint32_t output) {
+    try {
+        uint32_t output_index = this->m_recording.outputs.size();
+        Variable *v           = jitc_var(output);
+        uint32_t slot;
+        if (!has_variable(v->data)) {
+            slot = capture_variable(output);
+        } else {
+            slot = this->get_variable(v->data);
+        }
+
+        jitc_log(LogLevel::Trace,
+                 "record(): Adding variable %u output %u to slot s%u", output,
+                 output_index, slot);
+        ParamInfo info;
+        info.slot  = slot;
+        info.vtype = (VarType) v->type;
+        this->m_recording.outputs.push_back(info);
+    } catch (...) {
+        record_exception();
+    }
+}
+
+bool RecordThreadState::pause() {
+    bool tmp = m_paused;
+    m_paused = true;
+    return tmp;
+}
+bool RecordThreadState::resume() {
+    bool tmp = m_paused;
+    m_paused = false;
+    return tmp;
+}
+
 void RecordThreadState::record_expand(uint32_t index) {
     Variable *v = jitc_var(index);
 
     uint32_t dst_slot        = get_variable(v->data);
-    const RecordVariable &rv = this->m_recording.record_variables[dst_slot];
+    const RecordedVariable &rv = this->m_recording.recorded_variables[dst_slot];
     if (rv.last_memset == 0)
         jitc_fail("record(): Could not infer last memset operation of r%u s%u, "
                   "to construct expand operation!",
@@ -863,8 +1177,13 @@ void RecordThreadState::record_launch(
         }
     }
 
+#ifdef NDEBUG
     jitc_log(LogLevel::Info, "record(): recording kernel %u %016llx",
              this->m_recording.n_kernels++, (unsigned long long) hash.high64);
+#else
+    jitc_log(LogLevel::Info, "record(): recording kernel %016llx",
+             (unsigned long long) hash.high64);
+#endif
 
     uint32_t start = this->m_recording.dependencies.size();
     for (uint32_t param_index = 0; param_index < kernel_param_ids->size();
@@ -918,7 +1237,7 @@ void RecordThreadState::record_launch(
             }
 
         } else if (param_type == ParamType::Output) {
-            RecordVariable rv;
+            RecordedVariable rv;
             slot = this->add_variable(ptr, rv);
         } else
             jitc_fail("Parameter Type not supported!");
@@ -970,7 +1289,7 @@ void RecordThreadState::record_launch(
     if (uses_optix) {
         op.uses_optix = true;
 
-        scoped_pause();
+        pause_scope pause(this);
         // Copy SBT
         op.sbt = new OptixShaderBindingTable();
         std::memcpy(op.sbt, this->optix_sbt, sizeof(OptixShaderBindingTable));
@@ -1043,7 +1362,7 @@ void RecordThreadState::record_memset_async(void *ptr, uint32_t size,
                 "only isize<=8 is supported!",
                 isize);
 
-    RecordVariable rv;
+    RecordedVariable rv;
     rv.last_memset  = this->m_recording.operations.size() + 1;
     uint32_t ptr_id = this->add_variable(ptr, rv);
 
@@ -1158,7 +1477,7 @@ void RecordThreadState::record_aggregate(void *dst, AggregationEntry *agg,
     jitc_log(LogLevel::Debug, "record(): aggregate(dst=%p, size=%u)", dst,
              size);
 
-    uint32_t dst_id = this->add_variable(dst, RecordVariable{});
+    uint32_t dst_id = this->add_variable(dst, RecordedVariable{});
 
     jitc_log(LogLevel::Debug, " <- s%u", dst_id);
 
@@ -1201,7 +1520,7 @@ void RecordThreadState::record_aggregate(void *dst, AggregationEntry *agg,
             // uploaded.
             // We therefore defer the offset buffer capture to the
             // memcpy_async operation.
-            uint32_t slot = add_variable(p.src, RecordVariable());
+            uint32_t slot = add_variable(p.src, RecordedVariable());
 
             jitc_log(LogLevel::Debug, "    var at slot s%u", slot);
 
@@ -1246,7 +1565,7 @@ void RecordThreadState::record_reduce_expanded(VarType vt, ReduceOp reduce_op,
              "size=%u)",
              (uint32_t) vt, (uint32_t) reduce_op, data, exp, size);
 
-    uint32_t data_id = this->add_variable(data, RecordVariable{});
+    uint32_t data_id = this->add_variable(data, RecordedVariable{});
 
     uint32_t start = this->m_recording.dependencies.size();
     add_out_param(data_id, vt);
@@ -1263,12 +1582,18 @@ void RecordThreadState::record_reduce_expanded(VarType vt, ReduceOp reduce_op,
 }
 
 void Recording::validate() {
-    for (uint32_t i = 0; i < this->record_variables.size(); i++) {
-        RecordVariable &rv = this->record_variables[i];
-        if (rv.state == RecordVarState::Uninit) {
+    for (uint32_t i = 0; i < this->recorded_variables.size(); i++) {
+        RecordedVariable &rv = this->recorded_variables[i];
+        if (rv.state == RecordedVarState::Uninitialized) {
+#ifdef NDEBUG
             jitc_fail("record(): Variable at slot s%u %p was left in an "
                       "uninitialized state!",
                       i, rv.ptr);
+#else
+            jitc_fail("record(): Variable at slot s%u was left in an "
+                      "uninitialized state!",
+                      i);
+#endif
         }
     }
 }
@@ -1361,6 +1686,206 @@ Recording *jitc_freeze_stop(JitBackend backend, const uint32_t *outputs,
     }
 }
 
+/**
+ * This captures the offset buffer of a vcall in a kernel.
+ * The offset buffer describes where in the data buffer of that vcall the
+ * variables or pointers to variables, for that vcall are stored.
+ * It should not change between invocations and we should therefore be able
+ * to capture it and reuse it when replaying the kernel.
+ */
+uint32_t RecordThreadState::capture_call_offset(const void *ptr, size_t dsize) {
+    uint32_t size = dsize / type_size[(uint32_t) VarType::UInt64];
+
+    AllocType atype =
+        backend == JitBackend::CUDA ? AllocType::Device : AllocType::HostAsync;
+    uint64_t *data = (uint64_t *) jitc_malloc(atype, dsize);
+    jitc_memcpy(backend, data, ptr, dsize);
+
+    uint32_t data_var =
+        jitc_var_mem_map(backend, VarType::UInt64, data, size, true);
+
+    RecordedVariable rv;
+#ifdef NDEBUG
+    rv.ptr = ptr;
+#endif
+    rv.state = RecordedVarState::Captured;
+    rv.init  = RecordedVarInit::Captured;
+    rv.index = data_var;
+
+    uint32_t slot;
+    auto it = this->ptr_to_slot.find(ptr);
+    if (it == this->ptr_to_slot.end()) {
+        slot = this->m_recording.recorded_variables.size();
+
+        this->m_recording.recorded_variables.push_back(rv);
+
+        this->ptr_to_slot.insert({ ptr, slot });
+    } else {
+        slot                  = it.value();
+        RecordedVariable &old = this->m_recording.recorded_variables[slot];
+        if (old.init != RecordedVarInit::None)
+            jitc_fail("record(): Tried to overwrite an initialized variable "
+                      "with an offset buffer!");
+
+        this->m_recording.recorded_variables[slot] = rv;
+    }
+
+    return slot;
+}
+
+/**
+ * This function tries to capture a variable that is not known to the
+ * recording \c ThreadState.
+ * This is unsupported for now and raises an exception.
+ */
+uint32_t RecordThreadState::capture_variable(uint32_t index,
+                                             const void * /*ptr*/,
+                                             bool /*remember*/, bool test_scope,
+                                             bool /*overwrite*/) {
+
+    pause_scope pause(this);
+    Variable *v = jitc_var(index);
+    if (v->scope < this->m_internal->scope && test_scope) {
+        jitc_raise("record(): Variable r%u[%u] -> %p, label=%s, was created "
+                   "before recording was started, but it was "
+                   "not specified as an input variable! This can happen if a "
+                   "input type is not fully traversable, for example when not "
+                   "specifying a member in DRJIT_STRUCT, but using it in the "
+                   "frozen function.",
+                   index, v->size, v->data, jitc_var_label(index));
+    }
+
+    jitc_raise("record(): Variable r%u[%u] -> %p, label=%s, was created while "
+               "recording, but it was not created by a supported operation. "
+               "This can happen if a memory region was created outside of "
+               "Dr.Jit but mapped to a Dr.Jit variable.",
+               index, v->size, v->data, jitc_var_label(index));
+
+    return 0;
+}
+
+/**
+ * Add information about a variable, deduplicating it and returning the slot
+ * in the `variables` field of the recording.
+ * Information is combined when the variable has already been added.
+ * This is used by the input variables of a kernel.
+ */
+uint32_t RecordThreadState::add_variable(const void *ptr, RecordedVariable rv) {
+#ifdef NDEBUG
+    rv.ptr = ptr;
+#endif
+    auto it = this->ptr_to_slot.find(ptr);
+
+    if (it == this->ptr_to_slot.end()) {
+        uint32_t slot = this->m_recording.recorded_variables.size();
+
+        this->m_recording.recorded_variables.push_back(rv);
+
+        this->ptr_to_slot.insert({ ptr, slot });
+
+        return slot;
+    } else {
+        uint32_t slot = it.value();
+
+        this->m_recording.recorded_variables[slot] |= rv;
+
+        return slot;
+    }
+}
+
+/// Return the slot index given the data pointer of a variable.
+/// This fails if the variable has not been previously added.
+uint32_t RecordThreadState::get_variable(const void *ptr) {
+    auto it = this->ptr_to_slot.find(ptr);
+
+    if (it == this->ptr_to_slot.end())
+        jitc_fail("Failed to find the slot corresponding to the variable "
+                  "with data at %p",
+                  ptr);
+
+    return it.value();
+}
+
+/// Test if the ThreadState knows this \c ptr
+bool RecordThreadState::has_variable(const void *ptr) {
+    auto it = this->ptr_to_slot.find(ptr);
+
+    return it != this->ptr_to_slot.end();
+}
+
+/**
+ * Adds a parameter access to the \ref dependencies vector.
+ * This also modifies the state of the \ref RecordVariable that was
+ * accessed.
+ */
+void RecordThreadState::add_param(ParamInfo info) {
+    RecordedVariable &rv = this->m_recording.recorded_variables[info.slot];
+    if (info.type == ParamType::Output) {
+
+        jitc_log(LogLevel::Debug, " <- param s%u", info.slot);
+
+        if (info.vtype != VarType::Void)
+            rv.type = info.vtype;
+
+        rv.state = RecordedVarState::OpOutput;
+
+    } else if (info.type == ParamType::Input) {
+
+        jitc_log(LogLevel::Debug, " -> param s%u", info.slot);
+
+        if (info.test_uninit && rv.state == RecordedVarState::Uninitialized)
+            jitc_raise("record(): Varaible at slot s%u was read from by "
+                       "operation o%u, but has not yet been initialized! "
+                       "This can occur if the variable was not part of "
+                       "the input but is used by a recorded operation, for "
+                       "example if it was not specified as a member in a "
+                       "DRJIT_STRUCT but used in the frozen function.",
+                       info.slot,
+                       (uint32_t) this->m_recording.operations.size());
+
+        if (info.vtype == VarType::Void)
+            info.vtype = rv.type;
+    }
+
+    this->m_recording.dependencies.push_back(info);
+}
+/// Helper function for recording input parameters given the slot.
+void RecordThreadState::add_in_param(uint32_t slot, VarType vtype,
+                                     bool test_uninit) {
+    ParamInfo info;
+    info.type        = ParamType::Input;
+    info.slot        = slot;
+    info.test_uninit = test_uninit;
+    info.vtype       = vtype;
+    add_param(info);
+}
+/// Helper function recording input access given the pointer.
+void RecordThreadState::add_in_param(const void *ptr, VarType vtype,
+                                     bool test_uninit) {
+    uint32_t slot = this->get_variable(ptr);
+    add_in_param(slot, vtype, test_uninit);
+}
+/// Helper function recording an output access, given the slot and \ref VarType
+void RecordThreadState::add_out_param(uint32_t slot, VarType vtype) {
+    ParamInfo info;
+    info.type  = ParamType::Output;
+    info.slot  = slot;
+    info.vtype = vtype;
+    add_param(info);
+}
+/// Helper function recording an output access, given the pointer and \ref
+/// VarType
+void RecordThreadState::add_out_param(const void *ptr, VarType vtype) {
+    RecordedVariable rv;
+    uint32_t slot = this->add_variable(ptr, rv);
+    add_out_param(slot, vtype);
+}
+/// Helper function recording an output access, given the pointer and the
+/// uint32_t representation of a \ref VarType
+void RecordThreadState::add_out_param(uint32_t slot, uint32_t vtype) {
+    add_out_param(slot, (VarType) vtype);
+}
+
 void jitc_freeze_abort(JitBackend backend) {
     if (RecordThreadState *rts =
             dynamic_cast<RecordThreadState *>(thread_state(backend));
@@ -1387,15 +1912,15 @@ void jitc_freeze_abort(JitBackend backend) {
 }
 
 void jitc_freeze_destroy(Recording *recording) {
-    for (RecordVariable &rv : recording->record_variables) {
-        if (rv.init == RecordVarInit::Captured) {
+    for (RecordedVariable &rv : recording->recorded_variables) {
+        if (rv.init == RecordedVarInit::Captured) {
             jitc_var_dec_ref(rv.index);
         }
     }
     delete recording;
 }
 
-bool jitc_freeze_pause(JitBackend backend) {
+int jitc_freeze_pause(JitBackend backend) {
 
     if (RecordThreadState *rts =
             dynamic_cast<RecordThreadState *>(thread_state(backend));
@@ -1403,22 +1928,22 @@ bool jitc_freeze_pause(JitBackend backend) {
         return rts->pause();
     } else {
         jitc_fail(
-            "jit_record_stop(): Tried to pause recording a thread state "
+            "jit_freeze_pause(): Tried to pause recording a thread state "
             "for backend %u, while no recording was started for this backend. "
-            "Try to start the recording with jit_record_start.",
+            "Try to start the recording with jit_freeze_start.",
             (uint32_t) backend);
     }
 }
-bool jitc_freeze_resume(JitBackend backend) {
+int jitc_freeze_resume(JitBackend backend) {
     if (RecordThreadState *rts =
             dynamic_cast<RecordThreadState *>(thread_state(backend));
         rts != nullptr) {
         return rts->resume();
     } else {
         jitc_fail(
-            "jit_record_stop(): Tried to resume recording a thread state "
+            "jit_freeze_resume(): Tried to resume recording a thread state "
             "for backend %u, while no recording was started for this backend. "
-            "Try to start the recording with jit_record_start.",
+            "Try to start the recording with jit_freeze_start.",
             (uint32_t) backend);
     }
 }

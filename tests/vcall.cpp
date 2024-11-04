@@ -1257,8 +1257,6 @@ TEST_BOTH(14_kernel_record) {
     jit_set_flag(JitFlag::VCallOptimize, true);
     jit_set_flag(JitFlag::SymbolicCalls, true);
 
-    Recording *recording;
-
     struct Base {
         virtual UInt32 f(UInt32 x) = 0;
     };
@@ -1294,12 +1292,14 @@ TEST_BOTH(14_kernel_record) {
         outputs[0] = o0.index();
     };
 
+    
+    Recording *recording;
     {
         BasePtr self = arange<UInt32>(10) % 3;
         UInt32 i0 = arange<UInt32>(10);
         UInt32 r0(0, 2, 4, 0, 5, 7, 0, 8, 10, 0);
 
-        jit_log(LogLevel::Info, "Recording:");
+        jit_log(LogLevel::Debug, "Recording:");
 
         // This function does not perform any validation on the input.
         // The input should however be evaluated before starting freezing.
@@ -1320,9 +1320,9 @@ TEST_BOTH(14_kernel_record) {
 
             Mask mask = Mask::steal(jit_var_bool(Backend, true));
 
-            jit_log(LogLevel::Info, "self: %u", self.index());
-            jit_log(LogLevel::Info, "mask: %u", mask.index());
-            jit_log(LogLevel::Info, "i0: %u", i0.index());
+            jit_log(LogLevel::Debug, "self: %u", self.index());
+            jit_log(LogLevel::Debug, "mask: %u", mask.index());
+            jit_log(LogLevel::Debug, "i0: %u", i0.index());
             symbolic_call<n_callables, n_inputs, n_outputs>(
                 Backend, domain, false, self.index(), mask.index(), f_call,
                 vcall_inputs, vcall_outputs);
@@ -1330,20 +1330,20 @@ TEST_BOTH(14_kernel_record) {
             o0 = UInt32::borrow(vcall_outputs[0]);
             o0.eval();
 
-            jit_log(LogLevel::Info, "o0: %u", o0.index());
+            jit_log(LogLevel::Debug, "o0: %u", o0.index());
 
             outputs[0] = o0.index();
         }
 
         recording = jit_freeze_stop(Backend, outputs, 1);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
-        jit_log(LogLevel::Info, "r0: %s", jit_var_str(r0.index()));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "r0: %s", jit_var_str(r0.index()));
 
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
     }
 
-    jit_log(LogLevel::Info, "Replay:");
+    jit_log(LogLevel::Debug, "Replay:");
     {
         /**
          * Between recording and replay, the registry has to stay the same i.e.
@@ -1366,7 +1366,7 @@ TEST_BOTH(14_kernel_record) {
 
         jit_freeze_replay(recording, inputs, outputs);
 
-        jit_log(LogLevel::Info, "o0: %s", jit_var_str(outputs[0]));
+        jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
     }
 
