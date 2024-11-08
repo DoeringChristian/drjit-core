@@ -1925,6 +1925,7 @@ int jitc_freeze_pause(JitBackend backend) {
     if (RecordThreadState *rts =
             dynamic_cast<RecordThreadState *>(thread_state(backend));
         rts != nullptr) {
+        jit_set_flag(JitFlag::FreezingScope, false);
         return rts->pause();
     } else {
         jitc_fail(
@@ -1938,6 +1939,7 @@ int jitc_freeze_resume(JitBackend backend) {
     if (RecordThreadState *rts =
             dynamic_cast<RecordThreadState *>(thread_state(backend));
         rts != nullptr) {
+        jit_set_flag(JitFlag::FreezingScope, true);
         return rts->resume();
     } else {
         jitc_fail(
