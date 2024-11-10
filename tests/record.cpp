@@ -3,6 +3,7 @@
 #include "test.h"
 #include <functional>
 #include <type_traits>
+#include <utility>
 
 template<typename T>
 using has_index_t = decltype(std::declval<T>().index());
@@ -20,6 +21,11 @@ struct traversable<T, std::void_t<decltype(std::declval<T>().index())>>
         indices.push_back(v.index());
     }
 };
+
+template<typename ...Args>
+static void traverse_arguments(std::vector<uint32_t> &indices, Args&&... args){
+    (traversable<std::decay_t<Args>>::traverse(args, indices), ...);
+}
 
 template<typename T>
 using has_steal_t = decltype(T::steal(0));
@@ -52,15 +58,17 @@ static void log_vec(std::vector<uint32_t> &vec, const char *name){
     }
 }
 
-template <typename Input, typename Output>
+
+template <typename Func>
 struct FrozenFunction {
+    
     JitBackend m_backend;
-    std::function<Output(Input)> m_func;
+    Func m_func;
     
     uint32_t m_outputs = 0;
     Recording *m_recording = nullptr;
 
-    FrozenFunction(JitBackend backend, std::function<Output(Input)> func)
+    FrozenFunction(JitBackend backend, Func func)
         : m_backend(backend), m_func(func), m_outputs(0) {
         jit_log(LogLevel::Debug, "FrozenFunction()");
     }
@@ -69,10 +77,12 @@ struct FrozenFunction {
         m_recording = nullptr;
     }
     
-    Output operator()(Input input) {
+    template<typename... Args>
+    auto operator()(Args&&... args) {
+        using Output = typename std::invoke_result<Func, Args...>::type;
         
         std::vector<uint32_t> input_vector;
-        traversable<Input>::traverse(input, input_vector);
+        traverse_arguments(input_vector, args...);
         
         for (uint32_t i = 0; i < input_vector.size(); i++) {
             int rv;
@@ -82,10 +92,12 @@ struct FrozenFunction {
 
         Output output;
         if (!m_recording) {
+            jit_log(LogLevel::Debug, "Record:");
+            
             jit_freeze_start(m_backend, input_vector.data(),
                              input_vector.size());
 
-            output = m_func(input);
+            output = m_func(std::forward<Args>(args)...);
 
             std::vector<uint32_t> output_vector;
             traversable<Output>::traverse(output, output_vector);
@@ -100,6 +112,8 @@ struct FrozenFunction {
                                           output_vector.size());
             m_outputs = (uint32_t)output_vector.size();
         } else {
+            jit_log(LogLevel::Debug, "Replay:");
+            
             std::vector<uint32_t> output_vector(1, 0);
             
             jit_freeze_replay(m_recording, input_vector.data(),
@@ -126,31 +140,16 @@ TEST_BOTH(01_basic_replay) {
         return input + 1;
     };
 
+    FrozenFunction frozen(Backend, func);
 
-    jit_log(LogLevel::Debug, "Recording:");
-    // traversable<UInt32>().traverse(input, UInt32(0));
-    FrozenFunction<UInt32, UInt32> frozen(Backend, func);
-    {
-        auto input = arange<UInt32>(10);
+    for (uint32_t i = 0; i < 3; i++){
+        auto input = arange<UInt32>(10+ i);
 
         auto result = frozen(input);
 
         auto reference = func(input);
-
+        
         jit_assert(jit_var_all(jit_var_eq(result.index(), reference.index())));
-    }
-
-    jit_log(LogLevel::Debug, "Replay:");
-    {
-        for (uint32_t i = 0; i < 3; i++){
-            auto input = arange<UInt32>(10 + i) + i + 1;
-
-            auto result = frozen(input);
-            
-            auto reference = func(input);
-            
-            jit_assert(jit_var_all(jit_var_eq(result.index(), reference.index())));
-        }
     }
 }
 
