@@ -165,7 +165,7 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
         replay_variables.push_back(ReplayVariable(rv));
     }
 
-    jitc_log(LogLevel::Info, "replay(): inputs");
+    jitc_log(LogLevel::Debug, "replay(): inputs");
     // Populate with input variables
     for (uint32_t i = 0; i < this->inputs.size(); ++i) {
         Variable *input_variable = jitc_var(replay_inputs[i]);
@@ -302,18 +302,18 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
 
                     if (info.type == ParamType::Input) {
                         uint32_t size = rv.size(info.vtype);
-                        jitc_log(LogLevel::Info,
+                        jitc_log(LogLevel::Debug,
                                  " -> param s%u is_pointer=%u size=%u",
                                  info.slot, info.pointer_access, size);
                     } else {
-                        jitc_log(LogLevel::Info, " <- param s%u is_pointer=%u",
+                        jitc_log(LogLevel::Debug, " <- param s%u is_pointer=%u",
                                  info.slot, info.pointer_access);
                     }
 
                     if (info.type == ParamType::Output) {
                         rv.alloc(backend, launch_size, info.vtype);
                     }
-                    jitc_log(LogLevel::Info, "    data=%p", rv.data);
+                    jitc_log(LogLevel::Debug, "    data=%p", rv.data);
                     jitc_assert(
                         rv.data != nullptr || dry_run,
                         "replay(): Encountered nullptr in kernel parameters.");
@@ -534,13 +534,13 @@ int Recording::replay(const uint32_t *replay_inputs, uint32_t *outputs) {
                 uint32_t size         = values_var.size(values_info.vtype);
                 uint32_t bucket_count = op.bucket_count;
 
-                jitc_log(LogLevel::Info, " -> values: s%u data=%p size=%u",
+                jitc_log(LogLevel::Debug, " -> values: s%u data=%p size=%u",
                          values_info.slot, values_var.data, size);
 
-                jitc_log(LogLevel::Info, " <- perm: s%u", perm_info.slot);
+                jitc_log(LogLevel::Debug, " <- perm: s%u", perm_info.slot);
                 perm_var.alloc(backend, size, perm_info.vtype);
 
-                jitc_log(LogLevel::Info, " <- offsets: s%u", offsets_info.slot);
+                jitc_log(LogLevel::Debug, " <- offsets: s%u", offsets_info.slot);
                 offsets_var.alloc(backend, bucket_count * 4 + 1,
                                   offsets_info.vtype);
 
@@ -1178,10 +1178,10 @@ void RecordThreadState::record_launch(
     }
 
 #ifdef NDEBUG
-    jitc_log(LogLevel::Info, "record(): recording kernel %u %016llx",
+    jitc_log(LogLevel::Debug, "record(): recording kernel %u %016llx",
              this->m_recording.n_kernels++, (unsigned long long) hash.high64);
 #else
-    jitc_log(LogLevel::Info, "record(): recording kernel %016llx",
+    jitc_log(LogLevel::Debug, "record(): recording kernel %016llx",
              (unsigned long long) hash.high64);
 #endif
 
@@ -1314,10 +1314,10 @@ void RecordThreadState::record_launch(
     // Record max_input_size if we have only pointer inputs.
     // Therefore, if max_input_size > 0 we know this at replay.
     if (input_size == 0) {
-        jitc_log(LogLevel::Info, "    input_size(pointers)=%zu", ptr_size);
+        jitc_log(LogLevel::Debug, "    input_size(pointers)=%zu", ptr_size);
         op.input_size = ptr_size;
     } else {
-        jitc_log(LogLevel::Info, "    input_size(direct)=%zu", input_size);
+        jitc_log(LogLevel::Debug, "    input_size(direct)=%zu", input_size);
         op.input_size = input_size;
     }
 
