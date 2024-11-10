@@ -2,6 +2,7 @@
 #include "drjit-core/jit.h"
 #include "test.h"
 #include <functional>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -16,9 +17,24 @@ template <typename T, typename = void> struct traversable{
 template <typename T>
 struct traversable<T, std::void_t<decltype(std::declval<T>().index())>>
     : std::true_type {
-    static constexpr bool value = false;
+    static constexpr bool value = true;
     static void traverse(T &v, std::vector<uint32_t> &indices){
+        jit_log(LogLevel::Debug, "traverse indices[%u] = r%u", indices.size(), v.index());
         indices.push_back(v.index());
+    }
+};
+
+template <typename Tuple, std::size_t... I>
+static void traverse_tuple(Tuple& t, std::vector<uint32_t>& indices, std::index_sequence<I...>) {
+    // Expands in left-to-right order
+    (traversable<std::decay_t<decltype(std::get<I>(t))>>::traverse(std::get<I>(t), indices), ...);
+}
+
+template <typename... Ts>
+struct traversable<std::tuple<Ts...>>{
+    static constexpr bool value = true;
+    static void traverse(std::tuple<Ts...> &v, std::vector<uint32_t> &indices){
+        traverse_tuple(v, indices, std::index_sequence_for<Ts...>{});
     }
 };
 
@@ -33,17 +49,29 @@ using has_steal_t = decltype(T::steal(0));
 template <typename T, typename = void> struct constructable{
     static constexpr bool value = false;
     static T construct(std::vector<uint32_t> &indices, uint32_t &counter) {
-        static_assert("Could not construct type!");
+        static_assert(sizeof(T) == 0, "Could not construct type!");
     }
 };
 
+/// Construct any variable that has the \c borrow function
+/// It is necessary to use \c borrow instead of \c steal, since we would split
+/// ownership between outputs if they appeared twice.
 template <typename T>
-struct constructable<T, std::void_t<decltype(T::steal(0))>>
-    : std::true_type {
-    static constexpr bool value = false;
+struct constructable<T, std::void_t<decltype(T::borrow(0))>> : std::true_type {
+    static constexpr bool value = true;
     static T construct(std::vector<uint32_t> &indices, uint32_t &counter) {
-        jit_log(LogLevel::Debug, "construct indices[%u] = %u", counter, indices[counter]);
-        return T::steal(indices[counter++]);
+        jit_log(LogLevel::Debug, "construct indices[%u] = r%u", counter, indices[counter]);
+        return T::borrow(indices[counter++]);
+    }
+};
+
+template<typename... Ts>
+struct constructable<std::tuple<Ts...>>{
+    static constexpr bool value = true;
+    static std::tuple<Ts...> construct(std::vector<uint32_t> &indices,
+                                       uint32_t &counter) {
+        // NOTE: initializer list to guarantee order of construct evaluation
+        return std::tuple{ constructable<Ts>::construct(indices, counter)... };
     }
 };
 
@@ -111,6 +139,14 @@ struct FrozenFunction {
             m_recording = jit_freeze_stop(m_backend, output_vector.data(),
                                           output_vector.size());
             m_outputs = (uint32_t)output_vector.size();
+
+            uint32_t counter = 0;
+            output = constructable<Output>::construct(output_vector, counter);
+
+            // Free the borrowed indices
+            for(uint32_t index : output_vector)
+                jit_var_dec_ref(index);
+            
         } else {
             jit_log(LogLevel::Debug, "Replay:");
             
@@ -122,6 +158,10 @@ struct FrozenFunction {
 
             uint32_t counter = 0;
             output = constructable<Output>::construct(output_vector, counter);
+            
+            // Free the borrowed indices
+            for(uint32_t index : output_vector)
+                jit_var_dec_ref(index);
         }
 
         return output;
@@ -153,514 +193,188 @@ TEST_BOTH(01_basic_replay) {
     }
 }
 
-// /**
-//  * This tests a single kernel with multiple unique inputs and outputs.
-//  */
-// TEST_BOTH(02_MIMO) {
-//     Recording *recording;
-//
-//     jit_log(LogLevel::Debug, "Recording:");
-//     {
-//         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-//         UInt32 i1(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-//         UInt32 r0(0, 2, 4, 6, 8, 10, 12, 14, 16, 18);
-//         UInt32 r1(0, 1, 4, 9, 16, 25, 36, 49, 64, 81);
-//
-//         uint32_t inputs[] = {
-//             i0.index(),
-//             i1.index(),
-//         };
-//
-//         jit_freeze_start(Backend, inputs, 2);
-//
-//         UInt32 o0 = i0 + i1;
-//         UInt32 o1 = i0 * i1;
-//         o0.schedule();
-//         o1.schedule();
-//         jit_eval();
-//
-//         uint32_t outputs[] = {
-//             o0.index(),
-//             o1.index(),
-//         };
-//
-//         recording = jit_freeze_stop(Backend, outputs, 2);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
-//     }
-//
-//     jit_log(LogLevel::Debug, "Replay:");
-//     {
-//         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-//         UInt32 i1(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-//         UInt32 r0(2, 4, 6, 8, 10, 12, 14, 16, 18, 20);
-//         UInt32 r1(1, 4, 9, 16, 25, 36, 49, 64, 81, 100);
-//
-//         uint32_t inputs[] = {
-//             i0.index(),
-//             i1.index(),
-//         };
-//         uint32_t outputs[2];
-//
-//         jit_freeze_replay(recording, inputs, outputs);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
-//     }
-//
-//     jit_freeze_destroy(recording);
-// }
-//
-// /**
-//  * This tests if the recording feature works, when supplying the same variable
-//  * twice in the input. In the final implementation this test-case should never
-//  * occur, as variables would be deduplicated in beforehand.
-//  */
-// TEST_BOTH(03_deduplicating_input) {
-//     Recording *recording;
-//
-//     jit_log(LogLevel::Debug, "Recording:");
-//     {
-//         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-//         UInt32 r0(0, 2, 4, 6, 8, 10, 12, 14, 16, 18);
-//         UInt32 r1(0, 1, 4, 9, 16, 25, 36, 49, 64, 81);
-//
-//         uint32_t inputs[] = {
-//             i0.index(),
-//             i0.index(),
-//         };
-//
-//         jit_freeze_start(Backend, inputs, 2);
-//
-//         UInt32 o0 = i0 + i0;
-//         UInt32 o1 = i0 * i0;
-//         o0.schedule();
-//         o1.schedule();
-//         jit_eval();
-//
-//         uint32_t outputs[] = {
-//             o0.index(),
-//             o1.index(),
-//         };
-//
-//         recording = jit_freeze_stop(Backend, outputs, 2);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
-//     }
-//
-//     jit_log(LogLevel::Debug, "Replay:");
-//     {
-//         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-//         UInt32 r0(2, 4, 6, 8, 10, 12, 14, 16, 18, 20);
-//         UInt32 r1(1, 4, 9, 16, 25, 36, 49, 64, 81, 100);
-//
-//         uint32_t inputs[] = {
-//             i0.index(),
-//             i0.index(),
-//         };
-//         uint32_t outputs[2];
-//
-//         jit_freeze_replay(recording, inputs, outputs);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
-//     }
-//
-//     jit_freeze_destroy(recording);
-// }
-//
-// /**
-//  * This tests if the recording feature works, when supplying the same variable
-//  * twice in the output. In the final implementation this test-case should never
-//  * occur, as variables would be deduplicated in beforehand.
-//  */
-// TEST_BOTH(04_deduplicating_output) {
-//     Recording *recording;
-//     jit_set_log_level_stderr(LogLevel::Debug);
-//
-//     jit_log(LogLevel::Debug, "Recording:");
-//     {
-//         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-//         UInt32 i1(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-//         UInt32 r0(0, 2, 4, 6, 8, 10, 12, 14, 16, 18);
-//         UInt32 r1(0, 2, 4, 6, 8, 10, 12, 14, 16, 18);
-//
-//         uint32_t inputs[] = {
-//             i0.index(),
-//             i1.index(),
-//         };
-//
-//         jit_freeze_start(Backend, inputs, 2);
-//
-//         UInt32 o0 = i0 + i1;
-//         UInt32 o1 = i0 + i1;
-//         o0.schedule();
-//         o1.schedule();
-//         jit_eval();
-//
-//         uint32_t outputs[] = {
-//             o0.index(),
-//             o1.index(),
-//         };
-//
-//         recording = jit_freeze_stop(Backend, outputs, 2);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
-//     }
-//
-//     jit_log(LogLevel::Debug, "Replay:");
-//     {
-//         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-//         UInt32 i1(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-//         UInt32 r0(2, 4, 6, 8, 10, 12, 14, 16, 18, 20);
-//         UInt32 r1(2, 4, 6, 8, 10, 12, 14, 16, 18, 20);
-//
-//         uint32_t inputs[] = {
-//             i0.index(),
-//             i1.index(),
-//         };
-//         uint32_t outputs[2];
-//
-//         jit_freeze_replay(recording, inputs, outputs);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
-//     }
-//
-//     jit_freeze_destroy(recording);
-// }
-//
-// /**
-//  * This tests, Whether it is possible to record multiple kernels in sequence.
-//  * The input of the second kernel relies on the execution of the first.
-//  * On LLVM, the correctness of barrier operations is therefore tested.
-//  */
-// TEST_BOTH(05_sequential_kernels) {
-//     Recording *recording;
-//
-//     jit_log(LogLevel::Debug, "Recording:");
-//     {
-//         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-//         UInt32 r0(2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
-//
-//         uint32_t inputs[] = {
-//             i0.index(),
-//         };
-//
-//         jit_freeze_start(Backend, inputs, 1);
-//
-//         UInt32 tmp = i0 + 1;
-//         tmp.schedule();
-//         jit_eval();
-//         UInt32 o0 = tmp + 1;
-//         o0.schedule();
-//         jit_eval();
-//
-//         uint32_t outputs[] = {
-//             o0.index(),
-//         };
-//
-//         recording = jit_freeze_stop(Backend, outputs, 1);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//     }
-//
-//     jit_log(LogLevel::Debug, "Replay:");
-//     {
-//         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-//         UInt32 r0(2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
-//
-//         uint32_t inputs[] = {
-//             i0.index(),
-//         };
-//         uint32_t outputs[1];
-//
-//         jit_freeze_replay(recording, inputs, outputs);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//     }
-//
-//     jit_freeze_destroy(recording);
-// }
-//
-// /**
-//  * This tests, Whether it is possible to record multiple independent kernels in
-//  * the same recording.
-//  * The variables of the kernels are of different size, therefore two kernels are
-//  * generated. At replay these can be executed in parallel (LLVM) or sequence
-//  * (CUDA).
-//  */
-// TEST_BOTH(06_parallel_kernels) {
-//     Recording *recording;
-//
-//     jit_log(LogLevel::Debug, "Recording:");
-//     {
-//         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-//         UInt32 i1(0, 1, 2, 3, 4, 5);
-//         UInt32 r0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-//         UInt32 r1(1, 2, 3, 4, 5, 6);
-//
-//         uint32_t inputs[] = {
-//             i0.index(),
-//             i1.index(),
-//         };
-//
-//         jit_freeze_start(Backend, inputs, 2);
-//
-//         UInt32 o0 = i0 + 1;
-//         UInt32 o1 = i1 + 1;
-//         o0.schedule();
-//         o1.schedule();
-//         jit_eval();
-//
-//         uint32_t outputs[] = {
-//             o0.index(),
-//             o1.index(),
-//         };
-//
-//         recording = jit_freeze_stop(Backend, outputs, 2);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
-//     }
-//
-//     jit_log(LogLevel::Debug, "Replay:");
-//     {
-//         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-//         UInt32 i1(1, 2, 3, 4, 5, 6);
-//         UInt32 r0(2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
-//         UInt32 r1(2, 3, 4, 5, 6, 7);
-//
-//         uint32_t inputs[] = {
-//             i0.index(),
-//             i1.index(),
-//         };
-//         uint32_t outputs[2];
-//
-//         jit_freeze_replay(recording, inputs, outputs);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//         jit_assert(jit_var_all(jit_var_eq(r1.index(), outputs[1])));
-//     }
-//
-//     jit_freeze_destroy(recording);
-// }
-//
-// /**
-//  * This tests the recording and replay of a horizontal reduction operation
-//  * (hsum).
-//  */
-// TEST_BOTH(07_reduce_hsum) {
-//     Recording *recording;
-//
-//     jit_log(LogLevel::Debug, "Recording:");
-//     {
-//         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-//         UInt32 r0 = opaque<UInt32>(55, 1);
-//
-//         uint32_t inputs[] = {
-//             i0.index(),
-//         };
-//
-//         jit_freeze_start(Backend, inputs, 1);
-//
-//         UInt32 tmp = i0 + 1;
-//
-//         UInt32 o0 = hsum(tmp);
-//         o0.schedule();
-//         jit_eval();
-//
-//         uint32_t outputs[] = {
-//             o0.index(),
-//         };
-//
-//         recording = jit_freeze_stop(Backend, outputs, 1);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//     }
-//
-//     jit_log(LogLevel::Debug, "Replay:");
-//     {
-//         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-//         UInt32 r0 = opaque<UInt32>(65, 1);
-//
-//         uint32_t inputs[] = {
-//             i0.index(),
-//         };
-//         uint32_t outputs[1];
-//
-//         jit_freeze_replay(recording, inputs, outputs);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//     }
-//
-//     jit_freeze_destroy(recording);
-// }
-//
-// /**
-//  * Tests recording of a prefix sum operation with different inputs at replay.
-//  */
-// TEST_BOTH(08_prefix_sum) {
-//     Recording *recording;
-//
-//     jit_log(LogLevel::Debug, "Recording:");
-//     {
-//         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-//         UInt32 r0(0, 1, 3, 6, 10, 15, 21, 28, 36, 45);
-//
-//         uint32_t inputs[] = {
-//             i0.index(),
-//         };
-//
-//         jit_freeze_start(Backend, inputs, 1);
-//
-//         uint32_t o0 = jit_var_block_prefix_reduce(
-//             ReduceOp::Add, i0.index(), jit_var_size(i0.index()), 0, 0);
-//         jit_var_schedule(o0);
-//         jit_eval();
-//
-//         uint32_t outputs[] = {
-//             o0,
-//         };
-//
-//         recording = jit_freeze_stop(Backend, outputs, 1);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//     }
-//
-//     jit_log(LogLevel::Debug, "Replay:");
-//     {
-//         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-//         UInt32 r0(1, 3, 6, 10, 15, 21, 28, 36, 45, 55);
-//
-//         uint32_t inputs[] = {
-//             i0.index(),
-//         };
-//         uint32_t outputs[1];
-//
-//         jit_freeze_replay(recording, inputs, outputs);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//     }
-//
-//     jit_freeze_destroy(recording);
-// }
-//
-// /**
-//  * Basic addition test.
-//  * Supplying a different input should replay the operation, with this input.
-//  * In this case, the input at replay is incremented and should result in an
-//  * incremented output.
-//  */
-// TEST_BOTH(9_resized_input) {
-//     Recording *recording;
-//
-//     jit_log(LogLevel::Debug, "Recording:");
-//     {
-//         UInt32 i0(0, 1, 2);
-//         UInt32 r0(1, 2, 3);
-//
-//         uint32_t inputs[] = {i0.index()};
-//
-//         jit_freeze_start(Backend, inputs, 1);
-//
-//         UInt32 o0 = i0 + 1;
-//         o0.eval();
-//
-//         uint32_t outputs[] = {o0.index()};
-//
-//         recording = jit_freeze_stop(Backend, outputs, 1);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//     }
-//
-//     jit_log(LogLevel::Debug, "Replay:");
-//     {
-//         UInt32 i0(1, 2, 3, 4);
-//         UInt32 r0(2, 3, 4, 5);
-//
-//         uint32_t inputs[] = {i0.index()};
-//         uint32_t outputs[1];
-//
-//         jit_freeze_replay(recording, inputs, outputs);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//     }
-//
-//     jit_freeze_destroy(recording);
-// }
-//
-// /**
-//  * Tests that it is possible to pass a single input to multiple outputs in a
-//  * frozen thread state without any use after free conditions.
-//  */
-// TEST_BOTH(10_input_passthrough) {
-//     Recording *recording;
-//
-//     jit_log(LogLevel::Debug, "Recording:");
-//     {
-//         UInt32 i0(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-//         UInt32 r0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-//
-//         uint32_t inputs[] = {i0.index()};
-//
-//         jit_freeze_start(Backend, inputs, 1);
-//
-//         UInt32 o0 = i0 + 1;
-//         o0.eval();
-//
-//         uint32_t outputs[] = {o0.index(), i0.index()};
-//
-//         recording = jit_freeze_stop(Backend, outputs, 2);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//         jit_assert(jit_var_all(jit_var_eq(i0.index(), outputs[1])));
-//     }
-//
-//     jit_log(LogLevel::Debug, "Replay:");
-//     {
-//         UInt32 i0(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-//         UInt32 r0(2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
-//
-//         uint32_t inputs[] = {i0.index()};
-//         uint32_t outputs[2];
-//
-//         jit_freeze_replay(recording, inputs, outputs);
-//
-//         jit_log(LogLevel::Debug, "o0: %s", jit_var_str(outputs[0]));
-//         jit_log(LogLevel::Debug, "o1: %s", jit_var_str(outputs[1]));
-//         jit_assert(jit_var_all(jit_var_eq(r0.index(), outputs[0])));
-//         jit_assert(jit_var_all(jit_var_eq(i0.index(), outputs[1])));
-//     }
-//
-//     jit_freeze_destroy(recording);
-// }
+/**
+ * This tests a single kernel with multiple unique inputs and outputs.
+ */
+TEST_BOTH(02_MIMO) {
+
+    auto func = [](UInt32 x, UInt32 y) {
+        return std::make_tuple(x + y, x * y);
+    };
+    
+    FrozenFunction frozen(Backend, func);
+
+    for (uint32_t i = 0; i < 3; i++){
+        auto x = arange<UInt32>(10 + i);
+        auto y = arange<UInt32>(10 + i) + 1;
+
+        auto result = frozen(x, y);
+
+        auto reference = func(x, y);
+
+        jit_assert(jit_var_all(jit_var_eq(std::get<0>(result).index(), std::get<0>(reference).index())));
+        jit_assert(jit_var_all(jit_var_eq(std::get<1>(result).index(), std::get<1>(reference).index())));
+    }
+}
+
+/**
+ * This tests if the recording feature works, when supplying the same variable
+ * twice in the input. In the final implementation this test-case should never
+ * occur, as variables would be deduplicated in beforehand.
+ */
+TEST_BOTH(03_deduplicating_input) {
+
+    auto func = [](UInt32 x, UInt32 y){
+        return std::tuple(x+y, x*y);
+    };
+
+    FrozenFunction frozen(Backend, func);
+
+    for (uint32_t i = 0; i < 3; i++){
+        auto x = arange<UInt32>(10 + i);
+
+        auto result = frozen(x, x);
+
+        auto reference = func(x, x);
+
+        jit_assert(jit_var_all(jit_var_eq(std::get<0>(result).index(), std::get<0>(reference).index())));
+        jit_assert(jit_var_all(jit_var_eq(std::get<1>(result).index(), std::get<1>(reference).index())));
+    }
+}
+
+/**
+ * This tests if the recording feature works, when supplying the same variable
+ * twice in the output. In the final implementation this test-case should never
+ * occur, as variables would be deduplicated in beforehand.
+ */
+TEST_BOTH(04_deduplicating_output) {
+    // NOTE: removed this test, as this will never occur in the Python
+    // implementation, but would require significant effort implementing the
+    // FrozenFunction for the tests.
+}
+
+/**
+ * This tests, Whether it is possible to record multiple kernels in sequence.
+ * The input of the second kernel relies on the execution of the first.
+ * On LLVM, the correctness of barrier operations is therefore tested.
+ */
+TEST_BOTH(05_sequential_kernels) {
+
+    auto func = [](UInt32 x){
+        auto y = x + 1;
+        y.eval();
+        return y + 1;
+    };
+    
+    FrozenFunction frozen(Backend, func);
+
+    for (uint32_t i = 0; i < 3; i++){
+        auto x = arange<UInt32>(10 + i);
+
+        auto result = frozen(x);
+
+        auto reference = func(x);
+
+        jit_assert(jit_var_all(jit_var_eq(result.index(), reference.index())));
+    }
+}
+
+/**
+ * This tests, Whether it is possible to record multiple independent kernels in
+ * the same recording.
+ * The variables of the kernels are of different size, therefore two kernels are
+ * generated. At replay these can be executed in parallel (LLVM) or sequence
+ * (CUDA).
+ */
+TEST_BOTH(06_parallel_kernels) {
+
+    auto func = [](UInt32 x, UInt32 y){
+        return std::tuple(x + 1, y + 1);
+    };
+    
+    FrozenFunction frozen(Backend, func);
+
+    for (uint32_t i = 0; i < 3; i++){
+        auto x = arange<UInt32>(10 + i);
+        auto y = arange<UInt32>(11 + i);
+
+        auto result = frozen(x, y);
+
+        auto reference = func(x, y);
+
+        jit_assert(jit_var_all(jit_var_eq(std::get<0>(result).index(), std::get<0>(reference).index())));
+        jit_assert(jit_var_all(jit_var_eq(std::get<1>(result).index(), std::get<1>(reference).index())));
+    }
+}
+
+/**
+ * This tests the recording and replay of a horizontal reduction operation
+ * (hsum).
+ */
+TEST_BOTH(07_reduce_hsum) {
+
+    auto func = [](UInt32 x){
+        return hsum(x + 1);
+    };
+    
+    FrozenFunction frozen(Backend, func);
+
+    for (uint32_t i = 0; i < 3; i++){
+        auto x = arange<UInt32>(10 + i);
+
+        auto result = frozen(x);
+
+        auto reference = func(x);
+
+        jit_assert(jit_var_all(jit_var_eq(result.index(), reference.index())));
+    }
+}
+
+/**
+ * Tests recording of a prefix sum operation with different inputs at replay.
+ */
+TEST_BOTH(08_prefix_sum) {
+
+    auto func = [](UInt32 x){
+        return block_prefix_sum(x, x.size());
+    };
+    
+    FrozenFunction frozen(Backend, func);
+
+    for (uint32_t i = 0; i < 3; i++){
+        auto x = arange<UInt32>(10 + i);
+        x.make_opaque();
+
+        auto result = frozen(x);
+
+        auto reference = func(x);
+
+        jit_assert(jit_var_all(jit_var_eq(result.index(), reference.index())));
+    }
+}
+
+/**
+ * Tests that it is possible to pass a single input to multiple outputs in a
+ * frozen thread state without any use after free conditions.
+ */
+TEST_BOTH(10_input_passthrough) {
+    
+    auto func = [](UInt32 x){
+        auto y = x + 1;
+        return std::tuple(y, y);
+    };
+    
+    FrozenFunction frozen(Backend, func);
+
+    for (uint32_t i = 0; i < 3; i++){
+        auto x = arange<UInt32>(10 + i);
+        x.make_opaque();
+
+        auto result = frozen(x);
+
+        auto reference = func(x);
+
+        jit_assert(jit_var_all(jit_var_eq(std::get<0>(result).index(), std::get<0>(reference).index())));
+        jit_assert(jit_var_all(jit_var_eq(std::get<1>(result).index(), std::get<1>(reference).index())));
+    }
+}
