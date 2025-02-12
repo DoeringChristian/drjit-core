@@ -1362,6 +1362,26 @@ VarState jitc_var_state(uint32_t index) {
         return VarState::Unevaluated;
 }
 
+VarInfo jitc_set_backend(uint32_t index) {
+    VarInfo info;
+
+    Variable *var = jitc_var(index);
+    default_backend = (JitBackend) var->backend;
+
+    info.backend = (JitBackend)var->backend;
+    info.type = (VarType)var->type;
+    info.state = jitc_var_state(index);
+    info.size = var->size;
+    info.is_array = var->is_array();
+    info.unaligned = var->unaligned;
+    if(info.state == VarState::Literal)
+        info.literal = var->literal;
+    else if (info.state == VarState::Evaluated)
+        info.data = var->data;
+
+    return info;
+}
+
 /// Schedule a variable \c index for future evaluation via \ref jit_eval()
 int jitc_var_schedule(uint32_t index) {
     if (index == 0)

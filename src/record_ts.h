@@ -22,6 +22,10 @@ void jitc_freeze_replay(Recording *recording, const uint32_t *inputs,
 
 int jitc_freeze_dry_run(Recording *recording, const uint32_t *inputs);
 
+int jitc_freeze_schedule_force(uint32_t n, uint32_t *input);
+int jitc_freeze_schedule(uint32_t n, uint32_t *input);
+void jitc_freeze_var_infos(uint32_t n, uint32_t *indices, VarInfo *infos);
+
 /// HashMap, mapping an allocation to a recorded variable
 using PtrToSlot = tsl::robin_map<const void *, uint32_t, PointerHasher>;
 

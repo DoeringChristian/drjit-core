@@ -2643,6 +2643,13 @@ extern JIT_EXPORT void jit_freeze_abort(JitBackend backend);
  */
 extern JIT_EXPORT void jit_freeze_destroy(Recording *recording);
 
+extern JIT_EXPORT int jit_freeze_schedule_force(uint32_t n, uint32_t *input);
+
+extern JIT_EXPORT int jit_freeze_schedule(uint32_t n, uint32_t *input);
+
+extern JIT_EXPORT void jit_freeze_var_infos(uint32_t n, uint32_t *indices,
+                                            VarInfo *infos);
+
 #if defined(__cplusplus)
 }
 #endif

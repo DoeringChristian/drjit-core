@@ -1332,24 +1332,8 @@ const char *jit_type_name(VarType type) noexcept {
 }
 
 VarInfo jit_set_backend(uint32_t index) noexcept {
-    VarInfo info;
-
     lock_guard guard(state.lock);
-    Variable *var = jitc_var(index);
-    default_backend = (JitBackend) var->backend;
-
-    info.backend = (JitBackend)var->backend;
-    info.type = (VarType)var->type;
-    info.state = jitc_var_state(index);
-    info.size = var->size;
-    info.is_array = var->is_array();
-    info.unaligned = var->unaligned;
-    if(info.state == VarState::Literal)
-        info.literal = var->literal;
-    else if (info.state == VarState::Evaluated)
-        info.data = var->data;
-
-    return info;
+    return jitc_set_backend(index);
 }
 
 uint32_t jit_var_loop_start(const char *name, bool symbolic, size_t n_indices, uint32_t *indices) {
@@ -1546,4 +1530,19 @@ int jit_freeze_dry_run(Recording *recording, const uint32_t *inputs) {
 void jit_freeze_destroy(Recording *recording) {
     lock_guard guard(state.lock);
     jitc_freeze_destroy(recording);
+}
+
+int jit_freeze_schedule_force(uint32_t n, uint32_t *input) {
+    lock_guard guard(state.lock);
+    return jitc_freeze_schedule_force(n, input);
+}
+
+int jit_freeze_schedule(uint32_t n, uint32_t *input) {
+    lock_guard guard(state.lock);
+    return jitc_freeze_schedule(n, input);
+}
+
+void jit_freeze_var_infos(uint32_t n, uint32_t *indices, VarInfo *infos){
+    lock_guard guard(state.lock);
+    return jitc_freeze_var_infos(n, indices, infos);
 }

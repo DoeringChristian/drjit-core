@@ -2224,3 +2224,25 @@ int jitc_freeze_dry_run(Recording *recording, const uint32_t *inputs) {
 
     return result;
 }
+
+int jitc_freeze_schedule_force(uint32_t n, uint32_t *input) {
+    int rv = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        input[i] = jitc_var_schedule_force(input[i], &rv);
+    }
+    return rv;
+}
+
+int jitc_freeze_schedule(uint32_t n, uint32_t *input) {
+    int rv = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        rv |= jitc_var_schedule(input[i]);
+        jitc_var_inc_ref(input[i]);
+    }
+    return rv;
+}
+void jitc_freeze_var_infos(uint32_t n, uint32_t *indices, VarInfo *infos){
+    for (uint32_t i = 0; i < n; i++) {
+        infos[i] = jitc_set_backend(indices[i]);
+    }
+}
