@@ -80,6 +80,7 @@ DR_VULKAN_SYM(PFN_vkGetPhysicalDeviceProperties2 vkGetPhysicalDeviceProperties2)
 DR_VULKAN_SYM(PFN_vkGetPhysicalDeviceFeatures2 vkGetPhysicalDeviceFeatures2);
 DR_VULKAN_SYM(PFN_vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceQueueFamilyProperties);
 DR_VULKAN_SYM(PFN_vkGetPhysicalDeviceMemoryProperties vkGetPhysicalDeviceMemoryProperties);
+DR_VULKAN_SYM(PFN_vkEnumerateDeviceExtensionProperties vkEnumerateDeviceExtensionProperties);
 DR_VULKAN_SYM(PFN_vkCreateDevice vkCreateDevice);
 
 // Device functions (resolved through the instance)

@@ -2874,7 +2874,7 @@ bool jitc_can_scatter_reduce(JitBackend backend, VarType vt, ReduceOp op) {
         return false;
 
     size_t compute_capability = 0;
-    bool is_llvm = false, is_cuda = false, is_metal = false;
+    bool is_llvm = false, is_cuda = false, is_metal = false, is_vulkan = false;
 
     is_llvm = jitc_is_llvm(backend);
     (void) is_llvm;
@@ -2890,6 +2890,14 @@ bool jitc_can_scatter_reduce(JitBackend backend, VarType vt, ReduceOp op) {
     is_metal = jitc_is_metal(backend);
 #endif
 
+#if defined(DRJIT_ENABLE_VULKAN)
+    const VulkanDevice *vulkan_device = nullptr;
+    if (jitc_is_vulkan(backend)) {
+        vulkan_device = &state.vulkan_devices[thread_state(backend)->device];
+        is_vulkan = true;
+    }
+#endif
+
     // Metal does not support 64-bit atomics
     if (is_metal && (vt == VarType::Int64 || vt == VarType::UInt64 ||
                      vt == VarType::Float64))
@@ -2903,6 +2911,13 @@ bool jitc_can_scatter_reduce(JitBackend backend, VarType vt, ReduceOp op) {
             // Scatter-reductions of masks/8-bit ints not implemented
             return false;
 
+        case VarType::Int16:
+        case VarType::UInt16:
+            // Vulkan lacks 16-bit integer atomics
+            if (is_vulkan)
+                return false;
+            break;
+
         case VarType::Float16:
             // Half-precision sum reduction require sm_60
             if (is_cuda && op == ReduceOp::Add && compute_capability < 60)
@@ -2911,6 +2926,10 @@ bool jitc_can_scatter_reduce(JitBackend backend, VarType vt, ReduceOp op) {
             // Half-precision min/max reductions require sm_90
             if (is_cuda && (op == ReduceOp::Min || op == ReduceOp::Max) &&
                 compute_capability < 90)
+                return false;
+
+            // Vulkan devices generally lack half precision atomics
+            if (is_vulkan)
                 return false;
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -2922,13 +2941,25 @@ bool jitc_can_scatter_reduce(JitBackend backend, VarType vt, ReduceOp op) {
             break;
 
         case VarType::Float32:
-            // CUDA/Metal emulate float32 min/max using integer atomics
+            // CUDA/Metal/Vulkan emulate float32 min/max using integer atomics
+#if defined(DRJIT_ENABLE_VULKAN)
+            // Vulkan: addition requires VK_EXT_shader_atomic_float
+            if (is_vulkan && op == ReduceOp::Add &&
+                !vulkan_device->atomic_float32_add)
+                return false;
+#endif
             break;
 
         case VarType::Float64:
             // Double precision addition requires sm_60, min/max are emulated
             if (is_cuda && op == ReduceOp::Add && compute_capability < 60)
                 return false;
+#if defined(DRJIT_ENABLE_VULKAN)
+            // Vulkan: addition requires VK_EXT_shader_atomic_float
+            if (is_vulkan && op == ReduceOp::Add &&
+                !vulkan_device->atomic_float64_add)
+                return false;
+#endif
             break;
 
         default:

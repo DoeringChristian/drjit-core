@@ -790,6 +790,10 @@ struct VulkanDevice {
     /// Number of threads per workgroup of the generated kernels
     uint32_t block_size;
 
+    /// Support for atomic floating point addition (VK_EXT_shader_atomic_float)
+    bool atomic_float32_add;
+    bool atomic_float64_add;
+
     /// Timeline VkSemaphore signaled by every submission to 'queue', and the
     /// value of the most recent signal operation
     void *timeline;

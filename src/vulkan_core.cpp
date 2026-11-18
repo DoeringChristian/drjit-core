@@ -456,6 +456,7 @@ static const char *jitc_vulkan_missing_feature(VkPhysicalDevice pdev) {
     if (!f.features.shaderInt64)         return "shaderInt64";
     if (!f.features.shaderFloat64)       return "shaderFloat64";
     if (!f12.shaderInt8)                 return "shaderInt8";
+    if (!f12.shaderBufferInt64Atomics)   return "shaderBufferInt64Atomics";
     if (!f12.shaderFloat16)              return "shaderFloat16";
     if (!f11.storageBuffer16BitAccess)   return "storageBuffer16BitAccess";
     if (!f12.storageBuffer8BitAccess)    return "storageBuffer8BitAccess";
@@ -591,6 +592,7 @@ bool jitc_vulkan_init() {
         VkPhysicalDeviceVulkan12Features f12 {};
         f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
         f12.shaderInt8 = VK_TRUE;
+        f12.shaderBufferInt64Atomics = VK_TRUE;
         f12.shaderFloat16 = VK_TRUE;
         f12.storageBuffer8BitAccess = VK_TRUE;
         f12.bufferDeviceAddress = VK_TRUE;
@@ -600,6 +602,30 @@ bool jitc_vulkan_init() {
         f11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
         f11.pNext = &f12;
         f11.storageBuffer16BitAccess = VK_TRUE;
+
+        // Optional: atomic floating point addition. The queried features of
+        // the extension are enabled as a whole.
+        uint32_t n_ext = 0;
+        vkEnumerateDeviceExtensionProperties(pdev, nullptr, &n_ext, nullptr);
+        std::vector<VkExtensionProperties> ext(n_ext);
+        vkEnumerateDeviceExtensionProperties(pdev, nullptr, &n_ext, ext.data());
+
+        VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomic_float {};
+        atomic_float.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+        const char *extensions[1];
+        uint32_t n_extensions = 0;
+        for (const VkExtensionProperties &e : ext) {
+            if (strcmp(e.extensionName,
+                       VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME) != 0)
+                continue;
+            VkPhysicalDeviceFeatures2 query {};
+            query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            query.pNext = &atomic_float;
+            vkGetPhysicalDeviceFeatures2(pdev, &query);
+            f12.pNext = &atomic_float;
+            extensions[n_extensions++] = VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME;
+        }
 
         VkPhysicalDeviceFeatures2 features {};
         features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -611,6 +637,8 @@ bool jitc_vulkan_init() {
         VkDeviceCreateInfo device_info {};
         device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         device_info.pNext = &features;
+        device_info.enabledExtensionCount = n_extensions;
+        device_info.ppEnabledExtensionNames = extensions;
         device_info.queueCreateInfoCount = 1;
         device_info.pQueueCreateInfos = &queue_info;
 
@@ -652,6 +680,8 @@ bool jitc_vulkan_init() {
 
         device.max_group_count = p.limits.maxComputeWorkGroupCount[0];
         device.block_size = block_size;
+        device.atomic_float32_add = atomic_float.shaderBufferFloat32AtomicAdd;
+        device.atomic_float64_add = atomic_float.shaderBufferFloat64AtomicAdd;
 
         size_t len = std::strlen(p.deviceName);
         device.name = (char *) std::malloc(len + 1);

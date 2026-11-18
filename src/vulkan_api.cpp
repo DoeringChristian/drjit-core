@@ -124,6 +124,7 @@ bool jitc_vulkan_api_init_instance(VkInstance instance) {
         LOAD(vkGetPhysicalDeviceFeatures2);
         LOAD(vkGetPhysicalDeviceQueueFamilyProperties);
         LOAD(vkGetPhysicalDeviceMemoryProperties);
+        LOAD(vkEnumerateDeviceExtensionProperties);
         LOAD(vkCreateDevice);
         LOAD(vkDestroyDevice);
         LOAD(vkGetDeviceQueue);
@@ -187,7 +188,8 @@ void jitc_vulkan_api_shutdown() {
     Z(vkCreateInstance); Z(vkDestroyInstance); Z(vkEnumeratePhysicalDevices);
     Z(vkGetPhysicalDeviceProperties2); Z(vkGetPhysicalDeviceFeatures2);
     Z(vkGetPhysicalDeviceQueueFamilyProperties);
-    Z(vkGetPhysicalDeviceMemoryProperties); Z(vkCreateDevice);
+    Z(vkGetPhysicalDeviceMemoryProperties);
+    Z(vkEnumerateDeviceExtensionProperties); Z(vkCreateDevice);
     Z(vkDestroyDevice); Z(vkGetDeviceQueue); Z(vkDeviceWaitIdle);
     Z(vkCreateBuffer); Z(vkDestroyBuffer); Z(vkGetBufferMemoryRequirements);
     Z(vkGetBufferDeviceAddress); Z(vkAllocateMemory); Z(vkFreeMemory);
