@@ -334,6 +334,22 @@ bool jitc_vulkan_kernel_compile(ThreadState *ts, Kernel &kernel) {
                                                 std::vector<uint8_t>(spirv));
             }
 
+            // Drivers may crash on invalid modules, hence validate them in
+            // debug mode
+            if (jit_flag(JitFlag::Debug)) {
+                spv_diagnostic diagnostic = nullptr;
+                if (spvValidateBinary(jitc_vulkan_spirv_context,
+                                      (const uint32_t *) spirv.data(),
+                                      spirv.size() / sizeof(uint32_t),
+                                      &diagnostic) != SPV_SUCCESS)
+                    jitc_fail("jitc_vulkan_kernel_compile(): validation of "
+                              "\"%s\" failed: %s\n\n--- Source code ---\n%s",
+                              job.symbol,
+                              diagnostic ? diagnostic->error : "<unknown>",
+                              job.source);
+                spvDiagnosticDestroy(diagnostic);
+            }
+
             VkShaderModuleCreateInfo module_info {};
             module_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
             module_info.codeSize = spirv.size();
@@ -436,7 +452,10 @@ static const char *jitc_vulkan_missing_feature(VkPhysicalDevice pdev) {
     f.pNext = &f11;
     vkGetPhysicalDeviceFeatures2(pdev, &f);
 
+    if (!f.features.shaderInt16)         return "shaderInt16";
     if (!f.features.shaderInt64)         return "shaderInt64";
+    if (!f.features.shaderFloat64)       return "shaderFloat64";
+    if (!f12.shaderFloat16)              return "shaderFloat16";
     if (!f11.storageBuffer16BitAccess)   return "storageBuffer16BitAccess";
     if (!f12.storageBuffer8BitAccess)    return "storageBuffer8BitAccess";
     if (!f12.bufferDeviceAddress)        return "bufferDeviceAddress";
@@ -570,6 +589,7 @@ bool jitc_vulkan_init() {
         // Enable the features checked by jitc_vulkan_missing_feature()
         VkPhysicalDeviceVulkan12Features f12 {};
         f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        f12.shaderFloat16 = VK_TRUE;
         f12.storageBuffer8BitAccess = VK_TRUE;
         f12.bufferDeviceAddress = VK_TRUE;
         f12.timelineSemaphore = VK_TRUE;
@@ -582,7 +602,9 @@ bool jitc_vulkan_init() {
         VkPhysicalDeviceFeatures2 features {};
         features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
         features.pNext = &f11;
+        features.features.shaderInt16 = VK_TRUE;
         features.features.shaderInt64 = VK_TRUE;
+        features.features.shaderFloat64 = VK_TRUE;
 
         VkDeviceCreateInfo device_info {};
         device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

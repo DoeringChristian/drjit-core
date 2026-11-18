@@ -91,6 +91,7 @@ bool jitc_vulkan_api_init() {
         LOAD(spvTextToBinary);
         LOAD(spvBinaryDestroy);
         LOAD(spvDiagnosticDestroy);
+        LOAD(spvValidateBinary);
 
         #undef LOAD
     } while (false);
@@ -203,6 +204,7 @@ void jitc_vulkan_api_shutdown() {
     Z(vkGetPipelineCacheData); Z(vkCreateComputePipelines);
     Z(vkDestroyPipeline); Z(spvContextCreate); Z(spvContextDestroy);
     Z(spvTextToBinary); Z(spvBinaryDestroy); Z(spvDiagnosticDestroy);
+    Z(spvValidateBinary);
     #undef Z
 
 #if !defined(_WIN32)

@@ -64,6 +64,9 @@ DR_VULKAN_SYM(spv_result_t (*spvTextToBinary)(spv_const_context, const char *,
                                               spv_diagnostic *));
 DR_VULKAN_SYM(void (*spvBinaryDestroy)(spv_binary));
 DR_VULKAN_SYM(void (*spvDiagnosticDestroy)(spv_diagnostic));
+DR_VULKAN_SYM(spv_result_t (*spvValidateBinary)(spv_const_context,
+                                                const uint32_t *, size_t,
+                                                spv_diagnostic *));
 
 // Global functions
 DR_VULKAN_SYM(PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr);

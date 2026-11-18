@@ -44,12 +44,28 @@ static void jitc_vulkan_declare_type(VarType vt) {
         case VarType::Void:    fmt_intrinsic("%void = OpTypeVoid"); break;
         case VarType::Bool:    fmt_intrinsic("%bool = OpTypeBool"); break;
         case VarType::UInt8:   fmt_intrinsic("%u8 = OpTypeInt 8 0"); break;
+        case VarType::UInt16:  fmt_intrinsic("%u16 = OpTypeInt 16 0"); break;
         case VarType::Int32:   fmt_intrinsic("%i32 = OpTypeInt 32 1"); break;
         case VarType::UInt32:  fmt_intrinsic("%u32 = OpTypeInt 32 0"); break;
         case VarType::Int64:   fmt_intrinsic("%i64 = OpTypeInt 64 1"); break;
         case VarType::UInt64:
         case VarType::Pointer: fmt_intrinsic("%u64 = OpTypeInt 64 0"); break;
-        case VarType::Float32: fmt_intrinsic("%f32 = OpTypeFloat 32"); break;
+
+        // Bit-level operations on floating point values use the unsigned
+        // integer type of the same size
+        case VarType::Float16:
+            fmt_intrinsic("%u16 = OpTypeInt 16 0");
+            fmt_intrinsic("%f16 = OpTypeFloat 16");
+            break;
+        case VarType::Float32:
+            fmt_intrinsic("%u32 = OpTypeInt 32 0");
+            fmt_intrinsic("%f32 = OpTypeFloat 32");
+            break;
+        case VarType::Float64:
+            fmt_intrinsic("%u64 = OpTypeInt 64 0");
+            fmt_intrinsic("%f64 = OpTypeFloat 64");
+            break;
+
         default:
             jitc_raise("jitc_vulkan_declare_type(): type \"%s\" is not yet "
                        "supported by the Vulkan backend.", type_name[(int) vt]);
@@ -121,9 +137,13 @@ void jitc_vulkan_render_prologue(ThreadState *ts) {
     const VulkanDevice &dev = state.vulkan_devices[ts->device];
 
     put("OpCapability Shader\n"
+        "OpCapability Int16\n"
         "OpCapability Int64\n"
+        "OpCapability Float16\n"
+        "OpCapability Float64\n"
         "OpCapability PhysicalStorageBufferAddresses\n"
         "OpCapability StorageBuffer8BitAccess\n"
+        "OpCapability StorageBuffer16BitAccess\n"
         "%glsl = OpExtInstImport \"GLSL.std.450\"\n"
         "OpMemoryModel PhysicalStorageBuffer64 GLSL450\n"
         "OpEntryPoint GLCompute %main "
@@ -243,6 +263,16 @@ void jitc_vulkan_assemble(ThreadState *ts, ScheduledGroup group,
         "OpFunctionEnd\n");
 }
 
+/// Bit pattern of a quiet NaN, for use with the binary type '%$b'
+static inline const char *jitc_vulkan_nan_str(const Variable *v) {
+    if (jitc_is_half(v))
+        return "0x7e00";
+    else if (jitc_is_single(v))
+        return "0x7fc00000";
+    else
+        return "0x7ff8000000000000";
+}
+
 static void jitc_vulkan_render_unhandled(const Variable *v) {
     jitc_raise("jitc_vulkan_render(): unhandled VarKind=%u (%s) for "
                "variable r%u (type=%s).",
@@ -290,6 +320,138 @@ static void jitc_vulkan_render_bitwise(Variable *v, const char *op,
         fmt("%$v = $s %$t %$v %$v\n", v, op, v, a0, a1);
 }
 
+/// Emit a half precision division, square root, or reciprocal in single
+/// precision. This matches the CUDA backend, which lacks half precision
+/// variants of these operations (see jitc_fp16_min_compute_cuda()).
+static void jitc_vulkan_render_half_as_single(Variable *v) {
+    Variable *a0 = jitc_var(v->dep[0]);
+    jitc_vulkan_declare_type(VarType::Float32);
+    fmt("%$v_0 = OpFConvert %f32 %$v\n", v, a0);
+
+    switch ((VarKind) v->kind) {
+        case VarKind::Div:
+        case VarKind::DivApprox:
+            fmt("%$v_1 = OpFConvert %f32 %$v\n"
+                "%$v_2 = OpFDiv %f32 %$v_0 %$v_1\n",
+                v, jitc_var(v->dep[1]), v, v, v);
+            break;
+
+        case VarKind::Sqrt:
+        case VarKind::SqrtApprox:
+            fmt("%$v_2 = OpExtInst %f32 %glsl Sqrt %$v_0\n", v, v);
+            break;
+
+        default: // Rcp, RcpApprox
+            jitc_vulkan_declare_const(VarType::Float32, 1);
+            fmt("%$v_2 = OpFDiv %f32 %c_f32_1 %$v_0\n", v, v);
+            break;
+    }
+
+    fmt("%$v = OpFConvert %f16 %$v_2\n", v, v);
+}
+
+/// Emit a rounding operation that is optionally fused with a float-to-int
+/// conversion
+static void jitc_vulkan_render_round(Variable *v, const char *fn) {
+    Variable *a0 = jitc_var(v->dep[0]);
+    const char *cvt = jitc_is_uint(v) ? "OpConvertFToU" : "OpConvertFToS";
+    if (jitc_is_float(v))
+        jitc_vulkan_render_ext(v, fn, 1);
+    else if ((VarKind) v->kind == VarKind::Trunc)
+        fmt("%$v = $s %$t %$v\n", v, cvt, v, a0);
+    else
+        fmt("%$v_r = OpExtInst %$t %glsl $s %$v\n"
+            "%$v = $s %$t %$v_r\n",
+            v, a0, fn, a0, v, cvt, v, v);
+}
+
+/// Emit a bit counting or reversal operation. SPIR-V restricts these to 32-bit
+/// operands, hence 64-bit values are processed as two halves.
+static void jitc_vulkan_render_bits(Variable *v) {
+    Variable *a0 = jitc_var(v->dep[0]);
+    VarKind kind = (VarKind) v->kind;
+    bool wide = type_size[v->type] == 8;
+
+    jitc_vulkan_declare_const(VarType::UInt32, 0);
+    jitc_vulkan_declare_const(VarType::UInt32, 31);
+    jitc_vulkan_declare_const(VarType::UInt32, 32);
+
+    // Unsigned view '%<v>_x' of the operand
+    fmt("%$v_x = $s %$b %$v\n", v,
+        jitc_is_sint(v) ? "OpBitcast" : "OpCopyObject", v, a0);
+
+    if (!wide) {
+        switch (kind) {
+            case VarKind::Popc:
+                fmt("%$v_w = OpBitCount %u32 %$v_x\n", v, v);
+                break;
+            case VarKind::Clz:
+                fmt("%$v_m = OpExtInst %u32 %glsl FindUMsb %$v_x\n"
+                    "%$v_w = OpISub %u32 %c_u32_31 %$v_m\n", v, v, v, v);
+                break;
+            case VarKind::Ctz:
+                fmt("%$v_l = OpExtInst %u32 %glsl FindILsb %$v_x\n"
+                    "%$v_z = OpIEqual %bool %$v_x %c_u32_0\n"
+                    "%$v_w = OpSelect %u32 %$v_z %c_u32_32 %$v_l\n",
+                    v, v, v, v, v, v, v);
+                break;
+            default: // Brev
+                fmt("%$v_w = OpBitReverse %u32 %$v_x\n", v, v);
+                break;
+        }
+    } else {
+        jitc_vulkan_declare_const(VarType::UInt64, 32);
+        fmt("%$v_l = OpUConvert %u32 %$v_x\n"
+            "%$v_s = OpShiftRightLogical %u64 %$v_x %c_u64_32\n"
+            "%$v_h = OpUConvert %u32 %$v_s\n",
+            v, v, v, v, v, v);
+
+        switch (kind) {
+            case VarKind::Popc:
+                fmt("%$v_c = OpBitCount %u32 %$v_l\n"
+                    "%$v_d = OpBitCount %u32 %$v_h\n"
+                    "%$v_y = OpIAdd %u32 %$v_c %$v_d\n"
+                    "%$v_w = OpUConvert %u64 %$v_y\n",
+                    v, v, v, v, v, v, v, v, v);
+                break;
+            case VarKind::Clz:
+                fmt("%$v_m = OpExtInst %u32 %glsl FindUMsb %$v_h\n"
+                    "%$v_c = OpISub %u32 %c_u32_31 %$v_m\n"
+                    "%$v_n = OpExtInst %u32 %glsl FindUMsb %$v_l\n"
+                    "%$v_d = OpISub %u32 %c_u32_31 %$v_n\n"
+                    "%$v_e = OpIAdd %u32 %c_u32_32 %$v_d\n"
+                    "%$v_z = OpIEqual %bool %$v_h %c_u32_0\n"
+                    "%$v_y = OpSelect %u32 %$v_z %$v_e %$v_c\n"
+                    "%$v_w = OpUConvert %u64 %$v_y\n",
+                    v, v, v, v, v, v, v, v, v, v, v, v, v, v, v, v, v, v);
+                break;
+            case VarKind::Ctz:
+                fmt("%$v_c = OpExtInst %u32 %glsl FindILsb %$v_l\n"
+                    "%$v_d = OpExtInst %u32 %glsl FindILsb %$v_h\n"
+                    "%$v_q = OpIEqual %bool %$v_h %c_u32_0\n"
+                    "%$v_f = OpSelect %u32 %$v_q %c_u32_32 %$v_d\n"
+                    "%$v_e = OpIAdd %u32 %c_u32_32 %$v_f\n"
+                    "%$v_z = OpIEqual %bool %$v_l %c_u32_0\n"
+                    "%$v_y = OpSelect %u32 %$v_z %$v_e %$v_c\n"
+                    "%$v_w = OpUConvert %u64 %$v_y\n",
+                    v, v, v, v, v, v, v, v, v, v, v, v, v, v, v, v, v, v, v);
+                break;
+            default: // Brev
+                fmt("%$v_c = OpBitReverse %u32 %$v_l\n"
+                    "%$v_d = OpBitReverse %u32 %$v_h\n"
+                    "%$v_f = OpUConvert %u64 %$v_c\n"
+                    "%$v_g = OpShiftLeftLogical %u64 %$v_f %c_u64_32\n"
+                    "%$v_k = OpUConvert %u64 %$v_d\n"
+                    "%$v_w = OpBitwiseOr %u64 %$v_g %$v_k\n",
+                    v, v, v, v, v, v, v, v, v, v, v, v, v);
+                break;
+        }
+    }
+
+    fmt("%$v = $s %$t %$v_w\n", v,
+        jitc_is_sint(v) ? "OpBitcast" : "OpCopyObject", v, v);
+}
+
 static void jitc_vulkan_render(Variable *v) {
     Variable *a0 = v->dep[0] ? jitc_var(v->dep[0]) : nullptr,
              *a1 = v->dep[1] ? jitc_var(v->dep[1]) : nullptr,
@@ -331,7 +493,10 @@ static void jitc_vulkan_render(Variable *v) {
         case VarKind::Mul: jitc_vulkan_render_binary(v, "OpFMul", "OpIMul", "OpIMul"); break;
         case VarKind::Div:
         case VarKind::DivApprox:
-            jitc_vulkan_render_binary(v, "OpFDiv", "OpSDiv", "OpUDiv");
+            if (jitc_is_half(v))
+                jitc_vulkan_render_half_as_single(v);
+            else
+                jitc_vulkan_render_binary(v, "OpFDiv", "OpSDiv", "OpUDiv");
             break;
         // NVIDIA's driver (615.71) evaluates OpSRem like OpUMod, hence the
         // remainder is computed from the quotient
@@ -359,19 +524,20 @@ static void jitc_vulkan_render(Variable *v) {
         case VarKind::Min:
         case VarKind::Max: {
             bool is_min = (VarKind) v->kind == VarKind::Min;
-            if (jitc_is_single(v)) {
-                jitc_vulkan_declare_const(VarType::UInt32, 0x7fc00000u);
+            if (jitc_is_float(v)) {
+                fmt_intrinsic("%nan_$b = OpConstant %$b $s", v, v,
+                              jitc_vulkan_nan_str(v));
                 fmt("%$v_m = OpExtInst %$t %glsl $s %$v %$v\n"
                     "%$v_a = OpIsNan %bool %$v\n"
                     "%$v_b = OpIsNan %bool %$v\n"
                     "%$v_o = OpLogicalOr %bool %$v_a %$v_b\n"
-                    "%$v_n = OpBitcast %$t %c_u32_$u\n"
+                    "%$v_n = OpBitcast %$t %nan_$b\n"
                     "%$v = OpSelect %$t %$v_o %$v_n %$v_m\n",
                     v, v, is_min ? "FMin" : "FMax", a0, a1,
                     v, a0,
                     v, a1,
                     v, v, v,
-                    v, v, 0x7fc00000u,
+                    v, v, v,
                     v, v, v, v, v);
             } else if (jitc_is_int(v)) {
                 jitc_vulkan_render_ext(
@@ -385,6 +551,56 @@ static void jitc_vulkan_render(Variable *v) {
 
         case VarKind::FMin: jitc_vulkan_render_ext(v, "NMin", 2); break;
         case VarKind::FMax: jitc_vulkan_render_ext(v, "NMax", 2); break;
+
+        case VarKind::MulHi:
+            fmt_intrinsic("%mulx_$t = OpTypeStruct %$t %$t", v, v, v);
+            fmt("%$v_x = $s %mulx_$t %$v %$v\n"
+                "%$v = OpCompositeExtract %$t %$v_x 1\n",
+                v, jitc_is_sint(v) ? "OpSMulExtended" : "OpUMulExtended", v,
+                a0, a1, v, v, v);
+            break;
+
+        case VarKind::MulWide: {
+            // OpUConvert requires an unsigned result type (the case for
+            // unsigned operands)
+            const char *cvt = jitc_is_sint(a0) ? "OpSConvert" : "OpUConvert";
+            fmt("%$v_0 = $s %$t %$v\n"
+                "%$v_1 = $s %$t %$v\n"
+                "%$v = OpIMul %$t %$v_0 %$v_1\n",
+                v, cvt, v, a0, v, cvt, v, a1, v, v, v, v);
+            break;
+        }
+
+        case VarKind::Copysign: {
+            // Take the sign bit from a1 and everything else from a0
+            const char *mask;
+            if (jitc_is_half(v))
+                mask = "0x8000";
+            else if (jitc_is_single(v))
+                mask = "0x80000000";
+            else
+                mask = "0x8000000000000000";
+            fmt_intrinsic("%sign_$b = OpConstant %$b $s", v, v, mask);
+            fmt("%$v_0 = OpBitcast %$b %$v\n"
+                "%$v_1 = OpBitcast %$b %$v\n"
+                "%$v_2 = OpBitwiseXor %$b %$v_0 %$v_1\n"
+                "%$v_3 = OpBitwiseAnd %$b %$v_2 %sign_$b\n"
+                "%$v_4 = OpBitwiseXor %$b %$v_0 %$v_3\n"
+                "%$v = OpBitcast %$t %$v_4\n",
+                v, v, a0,
+                v, v, a1,
+                v, v, v, v,
+                v, v, v, v,
+                v, v, v, v,
+                v, v, v);
+            break;
+        }
+
+        // -- Rounding --
+        case VarKind::Ceil:  jitc_vulkan_render_round(v, "Ceil");      break;
+        case VarKind::Floor: jitc_vulkan_render_round(v, "Floor");     break;
+        case VarKind::Round: jitc_vulkan_render_round(v, "RoundEven"); break;
+        case VarKind::Trunc: jitc_vulkan_render_round(v, "Trunc");     break;
 
         // -- Comparisons --
         case VarKind::Eq:
@@ -467,6 +683,13 @@ static void jitc_vulkan_render(Variable *v) {
                                       "OpShiftRightLogical");
             break;
 
+        case VarKind::Popc:
+        case VarKind::Clz:
+        case VarKind::Ctz:
+        case VarKind::Brev:
+            jitc_vulkan_render_bits(v);
+            break;
+
         // -- Unary --
         case VarKind::Neg:
             fmt("%$v = $s %$t %$v\n", v,
@@ -492,8 +715,38 @@ static void jitc_vulkan_render(Variable *v) {
 
         case VarKind::Sqrt:
         case VarKind::SqrtApprox:
-            jitc_vulkan_render_ext(v, "Sqrt", 1);
+            if (jitc_is_half(v))
+                jitc_vulkan_render_half_as_single(v);
+            else
+                jitc_vulkan_render_ext(v, "Sqrt", 1);
             break;
+
+        // -- Reciprocal --
+        case VarKind::Rcp:
+        case VarKind::RcpApprox:
+            if (jitc_is_half(v)) {
+                jitc_vulkan_render_half_as_single(v);
+            } else {
+                jitc_vulkan_declare_const(vt, 1);
+                fmt("%$v = OpFDiv %$t %c_$t_1 %$v\n", v, v, v, a0);
+            }
+            break;
+
+        case VarKind::RSqrtApprox: jitc_vulkan_render_ext(v, "InverseSqrt", 1); break;
+
+        // -- Transcendental functions (approximations in Vulkan). GLSL.std.450
+        // only provides them for 16- and 32-bit operands. --
+        case VarKind::Sin:
+        case VarKind::Cos:
+        case VarKind::Exp2:
+        case VarKind::Log2:
+        case VarKind::Tanh: {
+            if (jitc_is_double(v))
+                jitc_vulkan_render_unhandled(v);
+            static const char *fns[] = { "Sin", "Cos", "Exp2", "Log2", "Tanh" };
+            jitc_vulkan_render_ext(v, fns[v->kind - (uint32_t) VarKind::Sin], 1);
+            break;
+        }
 
         // -- Casts --
         case VarKind::Cast: {
