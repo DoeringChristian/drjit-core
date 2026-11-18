@@ -45,14 +45,28 @@ static void jitc_vulkan_declare_type(VarType vt) {
         case VarType::Bool:    fmt_intrinsic("%bool = OpTypeBool"); break;
         case VarType::UInt8:   fmt_intrinsic("%u8 = OpTypeInt 8 0"); break;
         case VarType::UInt16:  fmt_intrinsic("%u16 = OpTypeInt 16 0"); break;
-        case VarType::Int32:   fmt_intrinsic("%i32 = OpTypeInt 32 1"); break;
         case VarType::UInt32:  fmt_intrinsic("%u32 = OpTypeInt 32 0"); break;
-        case VarType::Int64:   fmt_intrinsic("%i64 = OpTypeInt 64 1"); break;
         case VarType::UInt64:
         case VarType::Pointer: fmt_intrinsic("%u64 = OpTypeInt 64 0"); break;
 
-        // Bit-level operations on floating point values use the unsigned
-        // integer type of the same size
+        // Literals and bit-level operations of signed integer and floating
+        // point values use the unsigned integer type of the same size
+        case VarType::Int8:
+            fmt_intrinsic("%u8 = OpTypeInt 8 0");
+            fmt_intrinsic("%i8 = OpTypeInt 8 1");
+            break;
+        case VarType::Int16:
+            fmt_intrinsic("%u16 = OpTypeInt 16 0");
+            fmt_intrinsic("%i16 = OpTypeInt 16 1");
+            break;
+        case VarType::Int32:
+            fmt_intrinsic("%u32 = OpTypeInt 32 0");
+            fmt_intrinsic("%i32 = OpTypeInt 32 1");
+            break;
+        case VarType::Int64:
+            fmt_intrinsic("%u64 = OpTypeInt 64 0");
+            fmt_intrinsic("%i64 = OpTypeInt 64 1");
+            break;
         case VarType::Float16:
             fmt_intrinsic("%u16 = OpTypeInt 16 0");
             fmt_intrinsic("%f16 = OpTypeFloat 16");
@@ -137,6 +151,7 @@ void jitc_vulkan_render_prologue(ThreadState *ts) {
     const VulkanDevice &dev = state.vulkan_devices[ts->device];
 
     put("OpCapability Shader\n"
+        "OpCapability Int8\n"
         "OpCapability Int16\n"
         "OpCapability Int64\n"
         "OpCapability Float16\n"
@@ -365,20 +380,27 @@ static void jitc_vulkan_render_round(Variable *v, const char *fn) {
             v, a0, fn, a0, v, cvt, v, v);
 }
 
-/// Emit a bit counting or reversal operation. SPIR-V restricts these to 32-bit
-/// operands, hence 64-bit values are processed as two halves.
+/// Emit a bit counting or reversal operation. Vulkan restricts these to 32-bit
+/// operands, hence 64-bit values are processed as two halves, and 8/16-bit
+/// values are zero-extended.
 static void jitc_vulkan_render_bits(Variable *v) {
     Variable *a0 = jitc_var(v->dep[0]);
     VarKind kind = (VarKind) v->kind;
-    bool wide = type_size[v->type] == 8;
+    uint32_t bits = type_size[v->type] * 8;
+    bool wide = bits == 64, narrow = bits < 32;
 
     jitc_vulkan_declare_const(VarType::UInt32, 0);
     jitc_vulkan_declare_const(VarType::UInt32, 31);
     jitc_vulkan_declare_const(VarType::UInt32, 32);
 
-    // Unsigned view '%<v>_x' of the operand
-    fmt("%$v_x = $s %$b %$v\n", v,
-        jitc_is_sint(v) ? "OpBitcast" : "OpCopyObject", v, a0);
+    // Unsigned view '%<v>_x' of the operand (zero-extended to 32 bit)
+    if (narrow)
+        fmt("%$v_b = $s %$b %$v\n"
+            "%$v_x = OpUConvert %u32 %$v_b\n", v,
+            jitc_is_sint(v) ? "OpBitcast" : "OpCopyObject", v, a0, v, v);
+    else
+        fmt("%$v_x = $s %$b %$v\n", v,
+            jitc_is_sint(v) ? "OpBitcast" : "OpCopyObject", v, a0);
 
     if (!wide) {
         switch (kind) {
@@ -448,8 +470,32 @@ static void jitc_vulkan_render_bits(Variable *v) {
         }
     }
 
-    fmt("%$v = $s %$t %$v_w\n", v,
-        jitc_is_sint(v) ? "OpBitcast" : "OpCopyObject", v, v);
+    if (narrow) {
+        // Remove the contribution of the zero-extension
+        jitc_vulkan_declare_const(VarType::UInt32, bits);
+        jitc_vulkan_declare_const(VarType::UInt32, 32 - bits);
+        switch (kind) {
+            case VarKind::Popc:
+                fmt("%$v_a = OpCopyObject %u32 %$v_w\n", v, v);
+                break;
+            case VarKind::Clz:
+                fmt("%$v_a = OpISub %u32 %$v_w %c_u32_$u\n", v, v, 32 - bits);
+                break;
+            case VarKind::Ctz:
+                fmt("%$v_a = OpExtInst %u32 %glsl UMin %$v_w %c_u32_$u\n",
+                    v, v, bits);
+                break;
+            default: // Brev
+                fmt("%$v_a = OpShiftRightLogical %u32 %$v_w %c_u32_$u\n",
+                    v, v, 32 - bits);
+                break;
+        }
+        fmt("%$v_n = OpUConvert %$b %$v_a\n", v, v, v);
+    }
+
+    fmt("%$v = $s %$t %$v_$s\n", v,
+        jitc_is_sint(v) ? "OpBitcast" : "OpCopyObject", v, v,
+        narrow ? "n" : "w");
 }
 
 static void jitc_vulkan_render(Variable *v) {
