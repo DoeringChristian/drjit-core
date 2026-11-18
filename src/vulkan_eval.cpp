@@ -36,6 +36,8 @@
 #include "vulkan_scatter.h"
 #include "vulkan_packet.h"
 #include "vulkan.h"
+#include "loop.h"
+#include "cond.h"
 
 // Forward declaration
 static void jitc_vulkan_render(Variable *v);
@@ -385,6 +387,17 @@ static void jitc_vulkan_render_bitwise(Variable *v, const char *op,
             v, v, a0, v, v, a1, v, op, v, v, v, v, v, v);
     else
         fmt("%$v = $s %$t %$v %$v\n", v, op, v, a0, a1);
+}
+
+/// Emit the operand '%<v>', or a null constant of the type of ``like`` if ``v``
+/// was not assigned a register
+static void jitc_vulkan_render_operand(const Variable *v, const Variable *like) {
+    if (v->reg_index) {
+        fmt(" %$v", v);
+    } else {
+        fmt_intrinsic("%null_$t = OpConstantNull %$t", like, like);
+        fmt(" %null_$t", like);
+    }
 }
 
 /// Emit a half precision division, square root, or reciprocal in single
@@ -955,6 +968,120 @@ static void jitc_vulkan_render(Variable *v) {
         case VarKind::Bitcast:
             fmt("%$v = $s %$t %$v\n", v,
                 v->type == a0->type ? "OpCopyObject" : "OpBitcast", v, a0);
+            break;
+
+        // -- Loops. The loop state variables are phi nodes in the header block
+        // '%<loop>_lh', whose predecessors are '%<loop>_lp' (loop entry) and
+        // '%<loop>_lk' (back edge). The condition is evaluated in '%<loop>_lc'.
+        case VarKind::LoopStart: {
+            const LoopData *ld = (LoopData *) v->data;
+            if (ld->name != "unnamed")
+                fmt("; Symbolic loop: $s\n", ld->name.c_str());
+            fmt("OpBranch %$v_lp\n"
+                "%$v_lp = OpLabel\n"
+                "OpBranch %$v_lh\n"
+                "%$v_lh = OpLabel\n",
+                v, v, v, v);
+            for (size_t i = 0; i < ld->size; ++i) {
+                Variable *inner_in  = jitc_var(ld->inner_in[i]),
+                         *outer_in  = jitc_var(ld->outer_in[i]),
+                         *inner_out = jitc_var(ld->inner_out[i]);
+                if (inner_in == outer_in || !inner_in->reg_index)
+                    continue; // ignore eliminated/unused loop state variables
+                if (inner_in->is_array())
+                    jitc_vulkan_render_unhandled(inner_in);
+                fmt("%$v = OpPhi %$t", inner_in, inner_in);
+                jitc_vulkan_render_operand(outer_in, inner_in);
+                fmt(" %$v_lp", v);
+                jitc_vulkan_render_operand(inner_out->reg_index ? inner_out : inner_in,
+                                           inner_in);
+                fmt(" %$v_lk\n", v);
+            }
+            fmt("OpLoopMerge %$v_ld %$v_lk None\n"
+                "OpBranch %$v_lc\n"
+                "%$v_lc = OpLabel\n",
+                v, v, v, v);
+            break;
+        }
+
+        case VarKind::LoopCond:
+            fmt("OpBranchConditional %$v %$v_lb %$v_ld\n"
+                "%$v_lb = OpLabel\n",
+                a1, a0, a0, a0);
+            break;
+
+        case VarKind::LoopEnd:
+            fmt("OpBranch %$v_lk\n"
+                "%$v_lk = OpLabel\n"
+                "OpBranch %$v_lh\n"
+                "%$v_ld = OpLabel\n",
+                a0, a0, a0, a0);
+            break;
+
+        case VarKind::LoopPhi:
+            // The phi node is emitted by LoopStart
+            if (v->is_array())
+                jitc_vulkan_render_unhandled(v);
+            break;
+
+        // The header block dominates the loop exit, hence the phi node holds
+        // the final value of the loop state variable
+        case VarKind::LoopOutput: {
+            const LoopData *ld = (LoopData *) a0->data;
+            for (size_t i = 0; i < ld->size; ++i) {
+                if (jitc_var(ld->outer_out[i]) != v)
+                    continue;
+                fmt("%$v = OpCopyObject %$t", v, v);
+                jitc_vulkan_render_operand(jitc_var(ld->inner_in[i]), v);
+                put('\n');
+                break;
+            }
+            break;
+        }
+
+        // -- Conditionals. The outputs are phi nodes in the merge block
+        // '%<cond>_ce', whose predecessors are '%<cond>_cu' (end of the 'true'
+        // branch) and '%<cond>_cv' (end of the 'false' branch).
+        case VarKind::CondStart: {
+            const CondData *cd = (CondData *) v->data;
+            if (cd->name != "unnamed")
+                fmt("; Symbolic conditional: $s\n", cd->name.c_str());
+            fmt("OpSelectionMerge %$v_ce None\n"
+                "OpBranchConditional %$v %$v_ct %$v_cf\n"
+                "%$v_ct = OpLabel\n",
+                v, a0, v, v, v);
+            break;
+        }
+
+        case VarKind::CondMid:
+            fmt("OpBranch %$v_cu\n"
+                "%$v_cu = OpLabel\n"
+                "OpBranch %$v_ce\n"
+                "%$v_cf = OpLabel\n",
+                a0, a0, a0, a0);
+            break;
+
+        case VarKind::CondEnd: {
+            const CondData *cd = (CondData *) a0->data;
+            fmt("OpBranch %$v_cv\n"
+                "%$v_cv = OpLabel\n"
+                "OpBranch %$v_ce\n"
+                "%$v_ce = OpLabel\n",
+                a0, a0, a0, a0);
+            for (size_t i = 0; i < cd->indices_out.size(); ++i) {
+                Variable *vo = jitc_var(cd->indices_out[i]);
+                if (!jitc_cond_output_active(vo))
+                    continue;
+                fmt("%$v = OpPhi %$t", vo, vo);
+                jitc_vulkan_render_operand(jitc_var(cd->indices_t[i]), vo);
+                fmt(" %$v_cu", a0);
+                jitc_vulkan_render_operand(jitc_var(cd->indices_f[i]), vo);
+                fmt(" %$v_cv\n", a0);
+            }
+            break;
+        }
+
+        case VarKind::CondOutput: // The phi node is emitted by CondEnd
             break;
 
         default:
