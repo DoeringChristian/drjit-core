@@ -788,6 +788,9 @@ struct VulkanDevice {
     void *timeline;
     uint64_t submitted;
 
+    /// Identifies the device and driver for which pipeline cache data is valid
+    uint8_t pipeline_cache_uuid[16];
+
     /// Cached human-readable device name (owned, freed at shutdown)
     char *name;
 };

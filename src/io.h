@@ -146,6 +146,7 @@ enum class CacheKind : uint32_t {
     /// Relocatable object file of the LLVM backend
     Object,
 
+#if defined(DRJIT_ENABLE_METAL)
     /// Metal library image produced by the MSL front end
     MetalLibrary,
 
@@ -153,7 +154,16 @@ enum class CacheKind : uint32_t {
     MetalFunction,
 
     /// Metal binary archive holding a kernel's pipeline
-    MetalPipeline
+    MetalPipeline,
+#endif
+
+#if defined(DRJIT_ENABLE_VULKAN)
+    /// SPIR-V binary produced by the SPIR-V assembler
+    VulkanModule,
+
+    /// Vulkan pipeline cache data holding a kernel's pipeline
+    VulkanPipeline,
+#endif
 };
 
 /// Typed cache entries holding a single binary artifact. A store leaves a

@@ -447,6 +447,8 @@ bool jitc_vulkan_init() {
         device.physical_device = pdev;
         device.device = dev;
         device.queue_family = family;
+        std::memcpy(device.pipeline_cache_uuid, p.pipelineCacheUUID,
+                    VK_UUID_SIZE);
         vkGetDeviceQueue(dev, family, 0, (VkQueue *) &device.queue);
 
         VkCommandPoolCreateInfo pool_info {};

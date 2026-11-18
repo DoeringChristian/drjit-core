@@ -145,6 +145,11 @@ static CacheKindInfo jitc_cache_kinds[] = {
     { "func.metallib", lz4_dict_metallib },
     { "pso.metallib", lz4_dict_mpso },
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    // SPIR-V and pipeline cache data do not have dedicated dictionaries yet
+    { "spv", lz4_dict_object },
+    { "pso.vkcache", lz4_dict_object },
+#endif
 };
 
 char *jitc_lz4_inflate(const char *compressed, size_t compressed_size,
