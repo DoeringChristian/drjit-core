@@ -14,6 +14,9 @@
 #include "vulkan_ts.h"
 #include "buffer_map.h"
 #include "internal.h"
+#include "eval.h"
+#include "unit.h"
+#include "io.h"
 #include "log.h"
 
 #include <algorithm>
@@ -23,6 +26,9 @@
 #include <thread>
 
 static VkInstance jitc_vulkan_instance = nullptr;
+
+/// SPIRV-Tools context used to assemble kernels
+static spv_context jitc_vulkan_spirv_context = nullptr;
 
 /// Memory properties of each entry of ``state.vulkan_devices``
 static std::vector<VkPhysicalDeviceMemoryProperties> vulkan_memory_properties;
@@ -248,6 +254,153 @@ void jitc_vulkan_enqueue_callback(int device, void (*callback)(void *),
 }
 
 // ============================================================================
+//  Kernel compilation
+// ============================================================================
+
+/// Vulkan unit artifacts store a VkShaderModule in ptr[0] and its
+/// VkDevice in ptr[1]. The device index serves as the cache salt.
+static void jitc_vulkan_unit_release(UnitArtifact &a) {
+    vkDestroyShaderModule((VkDevice) a.ptr[1], (VkShaderModule) a.ptr[0],
+                          nullptr);
+}
+
+/// Fold device/driver identity and cache version into a disk-cache key
+static XXH128_hash_t jitc_vulkan_disk_key(const VulkanDevice &dev,
+                                          XXH128_hash_t hash) {
+    // A seeded reset consults the previous state, so it must be initialized
+    XXH3_state_t xs;
+    XXH3_INITSTATE(&xs);
+    XXH3_128bits_reset_withSeed(&xs, DRJIT_CACHE_VERSION);
+    XXH3_128bits_update(&xs, &hash, sizeof(XXH128_hash_t));
+    XXH3_128bits_update(&xs, dev.pipeline_cache_uuid,
+                        sizeof(dev.pipeline_cache_uuid));
+    return XXH3_128bits_digest(&xs);
+}
+
+bool jitc_vulkan_kernel_compile(ThreadState *ts, Kernel &kernel) {
+    if (!callable_units.empty())
+        jitc_raise("jit_eval(): calls are not yet supported by the Vulkan "
+                   "backend.");
+
+    const VulkanDevice &dev = state.vulkan_devices[ts->device];
+    VkDevice device = (VkDevice) dev.device;
+
+    UnitCompileJob job;
+    jitc_unit_job_init(0, job);
+
+    UnitArtifact artifact;
+    bool hit = jitc_unit_cache_lookup(JitBackend::Vulkan, job.unit_hash,
+                                      (uint64_t) ts->device, artifact);
+    VkShaderModule module = hit ? (VkShaderModule) artifact.ptr[0]
+                                : VK_NULL_HANDLE;
+
+    XXH128_hash_t module_key = jitc_vulkan_disk_key(dev, job.unit_hash),
+                  pipeline_key = jitc_vulkan_disk_key(dev, kernel_hash);
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    bool module_from_disk = false, pipeline_from_disk = false;
+
+    // Release the lock while compiling. The job source stays valid throughout
+    // (see UnitCompileJob in unit.h)
+    {
+        unlock_guard guard(state.lock);
+
+        if (!hit) {
+            // SPIR-V binary from the disk cache, or from the assembler
+            std::vector<uint8_t> spirv;
+            module_from_disk = jitc_cache_blob_load(CacheKind::VulkanModule,
+                                                    module_key, spirv);
+            if (!module_from_disk) {
+                spv_binary binary = nullptr;
+                spv_diagnostic diagnostic = nullptr;
+                if (spvTextToBinary(jitc_vulkan_spirv_context, job.source,
+                                    job.source_size, &binary,
+                                    &diagnostic) != SPV_SUCCESS)
+                    jitc_fail("jitc_vulkan_kernel_compile(): assembly of "
+                              "\"%s\" failed in line %zu: %s\n\n--- Source "
+                              "code ---\n%s", job.symbol,
+                              diagnostic ? diagnostic->position.line + 1 : 0,
+                              diagnostic ? diagnostic->error : "<unknown>",
+                              job.source);
+
+                const uint8_t *code = (const uint8_t *) binary->code;
+                spirv.assign(code, code + binary->wordCount * sizeof(uint32_t));
+                spvBinaryDestroy(binary);
+                spvDiagnosticDestroy(diagnostic);
+
+                if (jitc_cache_writable())
+                    jitc_cache_blob_store_async(CacheKind::VulkanModule,
+                                                module_key,
+                                                std::vector<uint8_t>(spirv));
+            }
+
+            VkShaderModuleCreateInfo module_info {};
+            module_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            module_info.codeSize = spirv.size();
+            module_info.pCode = (const uint32_t *) spirv.data();
+            vulkan_check(vkCreateShaderModule(device, &module_info, nullptr,
+                                              &module));
+        }
+
+        // The pipeline cache persists the machine code produced by the driver
+        std::vector<uint8_t> cache_data;
+        pipeline_from_disk = jitc_cache_blob_load(CacheKind::VulkanPipeline,
+                                                  pipeline_key, cache_data);
+
+        VkPipelineCacheCreateInfo cache_info {};
+        cache_info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+        cache_info.initialDataSize = cache_data.size();
+        cache_info.pInitialData = cache_data.data();
+
+        VkPipelineCache cache = VK_NULL_HANDLE;
+        vulkan_check(vkCreatePipelineCache(device, &cache_info, nullptr, &cache));
+
+        VkComputePipelineCreateInfo pipeline_info {};
+        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.stage.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        pipeline_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pipeline_info.stage.module = module;
+        pipeline_info.stage.pName = job.symbol;
+        pipeline_info.layout = (VkPipelineLayout) dev.layout;
+        vulkan_check(vkCreateComputePipelines(device, cache, 1, &pipeline_info,
+                                              nullptr, &pipeline));
+
+        if (!pipeline_from_disk && jitc_cache_writable()) {
+            size_t size = 0;
+            vulkan_check(vkGetPipelineCacheData(device, cache, &size, nullptr));
+            std::vector<uint8_t> data(size);
+            vulkan_check(
+                vkGetPipelineCacheData(device, cache, &size, data.data()));
+            jitc_cache_blob_store_async(CacheKind::VulkanPipeline,
+                                        pipeline_key, std::move(data));
+        }
+
+        vkDestroyPipelineCache(device, cache, nullptr);
+    }
+
+    // Publish the new artifacts; the cache pins the shader module
+    if (!hit) {
+        UnitArtifact a { { (void *) module, (void *) device }, 0, 0 };
+        jitc_unit_cache_insert(JitBackend::Vulkan, job.unit_hash,
+                               (uint64_t) ts->device, a,
+                               jitc_vulkan_unit_release);
+    }
+
+    kernel.vulkan.pipeline = (void *) pipeline;
+    kernel.size = (uint32_t) job.source_size;
+
+    // Report a soft miss when the module and pipeline were reconstructed from
+    // the in-memory or disk caches
+    return (hit || module_from_disk) && pipeline_from_disk;
+}
+
+void jitc_vulkan_kernel_free(int device, Kernel &kernel) {
+    vkDestroyPipeline((VkDevice) state.vulkan_devices[device].device,
+                      (VkPipeline) kernel.vulkan.pipeline, nullptr);
+}
+
+// ============================================================================
 //  Backend init / shutdown
 // ============================================================================
 
@@ -337,6 +490,8 @@ bool jitc_vulkan_init() {
         jitc_vulkan_shutdown();
         return false;
     }
+
+    jitc_vulkan_spirv_context = spvContextCreate(SPV_ENV_VULKAN_1_2);
 
     uint32_t device_count = 0;
     vulkan_check(vkEnumeratePhysicalDevices(jitc_vulkan_instance,
@@ -459,6 +614,19 @@ bool jitc_vulkan_init() {
                                          (VkCommandPool *) &device.pool));
 
         device.timeline = jitc_vulkan_create_timeline(dev);
+
+        VkPushConstantRange push_range {};
+        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        push_range.size = sizeof(uint64_t);
+
+        VkPipelineLayoutCreateInfo layout_info {};
+        layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layout_info.pushConstantRangeCount = 1;
+        layout_info.pPushConstantRanges = &push_range;
+        vulkan_check(vkCreatePipelineLayout(dev, &layout_info, nullptr,
+                                            (VkPipelineLayout *) &device.layout));
+
+        device.max_group_count = p.limits.maxComputeWorkGroupCount[0];
         device.block_size = block_size;
 
         size_t len = std::strlen(p.deviceName);
@@ -519,6 +687,8 @@ void jitc_vulkan_sync_devices() {
 void jitc_vulkan_shutdown() {
     jitc_log(Info, "jit_vulkan_shutdown()");
 
+    jitc_unit_cache_flush((int) JitBackend::Vulkan);
+
     for (size_t i = 0; i < state.vulkan_devices.size(); ++i) {
         VulkanDevice &dev = state.vulkan_devices[i];
         VulkanCompletion *c = vulkan_completions[i];
@@ -542,6 +712,8 @@ void jitc_vulkan_shutdown() {
                            nullptr);
         vkDestroyCommandPool((VkDevice) dev.device, (VkCommandPool) dev.pool,
                              nullptr);
+        vkDestroyPipelineLayout((VkDevice) dev.device,
+                                (VkPipelineLayout) dev.layout, nullptr);
         vkDestroyDevice((VkDevice) dev.device, nullptr);
         std::free(dev.name);
     }
@@ -549,6 +721,11 @@ void jitc_vulkan_shutdown() {
     vulkan_memory_properties.clear();
     vulkan_completions.clear();
     vulkan_buffer_map.clear();
+
+    if (jitc_vulkan_spirv_context) {
+        spvContextDestroy(jitc_vulkan_spirv_context);
+        jitc_vulkan_spirv_context = nullptr;
+    }
 
     if (jitc_vulkan_instance) {
         if (vkDestroyInstance)

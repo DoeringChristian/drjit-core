@@ -14,6 +14,8 @@
 #include "vulkan_api.h"
 #include "log.h"
 #include "malloc.h"
+#include "io.h"
+#include "history.h"
 
 #include <cstring>
 
@@ -150,6 +152,65 @@ void VulkanThreadState::enqueue_host_func(void (*callback)(void *),
 }
 
 // ============================================================================
+//  Kernel launch
+// ============================================================================
+
+Task *VulkanThreadState::launch(Kernel kernel, KernelKey & /*key*/,
+                                XXH128_hash_t /*hash*/, uint32_t size,
+                                std::vector<void *> &kernel_params,
+                                const std::vector<uint32_t> & /*kernel_param_ids*/,
+                                KernelHistoryEntry *kernel_history_entry) {
+    const VulkanDevice &dev = state.vulkan_devices[device];
+
+    // Larger kernels are processed by a grid-stride loop (see
+    // jitc_vulkan_assemble())
+    uint32_t groups = std::min(
+        (size + dev.block_size - 1) / dev.block_size,
+        dev.max_group_count);
+
+    // Upload the parameter array to device memory. The kernel receives its
+    // device address through a push constant.
+    size_t params_bytes = kernel_params.size() * sizeof(void *);
+    void *params = jitc_malloc(JitBackend::Vulkan, params_bytes);
+    if (params_bytes <= 65536) {
+        size_t offset = 0;
+        VulkanBuffer *buf =
+            (VulkanBuffer *) jitc_vulkan_find_buffer(params, &offset);
+        vkCmdUpdateBuffer((VkCommandBuffer) ensure_cmdbuf(),
+                          (VkBuffer) buf->buffer, offset, params_bytes,
+                          kernel_params.data());
+    } else {
+        // vkCmdUpdateBuffer() is limited to 64 KiB, copy larger arrays via a
+        // staging buffer
+        void *staging =
+            jitc_malloc(JitBackend::Vulkan, params_bytes, /*shared=*/true);
+        std::memcpy(staging, kernel_params.data(), params_bytes);
+        memcpy_async(params, staging, params_bytes);
+        jitc_free(staging);
+    }
+
+    VkCommandBuffer cb = (VkCommandBuffer) ensure_cmdbuf();
+    uint64_t params_addr = (uint64_t) (uintptr_t) params;
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      (VkPipeline) kernel.vulkan.pipeline);
+    vkCmdPushConstants(cb, (VkPipelineLayout) dev.layout,
+                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint64_t),
+                       &params_addr);
+    vkCmdDispatch(cb, groups, 1, 1);
+
+    // Later reuses of the memory are ordered after this launch (see
+    // ThreadState::free_next)
+    jitc_free(params);
+
+    if (kernel_history_entry) {
+        kernel_history_entry->size = size;
+        jitc_kernel_history_append(*kernel_history_entry);
+    }
+
+    return nullptr;
+}
+
+// ============================================================================
 //  Memory operations
 // ============================================================================
 
@@ -248,13 +309,6 @@ void VulkanThreadState::poke(void *dst, const void *src, uint32_t size) {
 // ============================================================================
 //  Operations that are not yet supported
 // ============================================================================
-
-Task *VulkanThreadState::launch(Kernel, KernelKey &, XXH128_hash_t, uint32_t,
-                                std::vector<void *> &,
-                                const std::vector<uint32_t> &,
-                                KernelHistoryEntry *) {
-    jitc_raise("jit_eval(): not yet supported by the Vulkan backend.");
-}
 
 void VulkanThreadState::block_reduce(VarType, ReduceOp, uint32_t, uint32_t,
                                      const void *, void *) {

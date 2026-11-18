@@ -27,6 +27,10 @@
 #  include "metal.h"
 #endif
 
+#if defined(DRJIT_ENABLE_VULKAN)
+#  include "vulkan.h"
+#endif
+
 // ====================================================================
 //  The following data structures are temporarily used during program
 //  generation. They are declared as global variables to enable memory
@@ -766,7 +770,8 @@ Task *jitc_run(ThreadState *ts, ScheduledGroup group) {
 #endif
 #if defined(DRJIT_ENABLE_VULKAN)
         if (jitc_is_vulkan(ts->backend)) {
-            jitc_raise("jit_eval(): not yet supported by the Vulkan backend.");
+            ProfilerPhase profiler(profiler_region_backend_compile);
+            cache_hit = jitc_vulkan_kernel_compile(ts, kernel);
         } else
 #endif
         if (jitc_is_llvm(ts->backend)) {

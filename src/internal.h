@@ -780,6 +780,13 @@ struct VulkanDevice {
     /// VkCommandPool that command buffers are allocated from
     void *pool;
 
+    /// VkPipelineLayout shared by all kernels (a push constant holding the
+    /// address of the kernel parameter array)
+    void *layout;
+
+    /// Maximum number of workgroups of a dispatch
+    uint32_t max_group_count;
+
     /// Number of threads per workgroup of the generated kernels
     uint32_t block_size;
 

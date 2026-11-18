@@ -122,6 +122,14 @@ struct Kernel {
             bool has_call_table;
         } metal;
 #endif
+
+#if defined(DRJIT_ENABLE_VULKAN)
+        /// 5. Vulkan
+        struct {
+            /// VkPipeline
+            void *pipeline;
+        } vulkan;
+#endif
     };
 };
 

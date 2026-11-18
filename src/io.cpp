@@ -682,6 +682,11 @@ void jitc_kernel_free(int device_id, const Kernel &kernel) {
         extern void jitc_metal_kernel_free(Kernel &);
         jitc_metal_kernel_free(const_cast<Kernel &>(kernel));
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    } else if (jitc_is_vulkan(kernel.backend)) {
+        extern void jitc_vulkan_kernel_free(int, Kernel &);
+        jitc_vulkan_kernel_free(device_id, const_cast<Kernel &>(kernel));
+#endif
 #if defined(DRJIT_ENABLE_CUDA)
     } else if (jitc_is_cuda(kernel.backend)) {
         const CUDADevice &device = state.devices.at(device_id);

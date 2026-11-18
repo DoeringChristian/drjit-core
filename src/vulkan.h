@@ -14,6 +14,7 @@
 #if defined(DRJIT_ENABLE_VULKAN)
 
 struct ThreadState;
+struct Kernel;
 
 /// Initialize the Vulkan backend
 extern bool jitc_vulkan_init();
@@ -30,6 +31,13 @@ extern void jitc_vulkan_flush(ThreadState *ts);
 
 /// Wait until the command buffers submitted by all threads have completed.
 extern void jitc_vulkan_sync_devices();
+
+/// Compile the just-assembled kernel into a Kernel object. Units are cached by
+/// content hash, and their SPIR-V and pipelines are also cached on disk.
+extern bool jitc_vulkan_kernel_compile(ThreadState *ts, Kernel &kernel);
+
+/// Free a previously compiled Vulkan kernel.
+extern void jitc_vulkan_kernel_free(int device, Kernel &kernel);
 
 /// Block until the timeline semaphore ``timeline`` of ``device`` reaches
 /// ``value``. Called without holding the Dr.Jit lock.

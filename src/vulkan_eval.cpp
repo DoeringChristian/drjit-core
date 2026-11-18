@@ -33,6 +33,7 @@
 #include "log.h"
 #include "strbuf.h"
 #include "vulkan_eval.h"
+#include "vulkan.h"
 
 // Forward declaration
 static void jitc_vulkan_render(Variable *v);
