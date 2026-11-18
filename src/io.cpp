@@ -668,21 +668,17 @@ void jitc_kernel_free(int device_id, const Kernel &kernel) {
     free(kernel.src);
     free(kernel.isect);
 
-    if (device_id == -1) {
+    if (jitc_is_llvm(kernel.backend)) {
         // The per-unit images referenced by 'reloc' are owned by the unit
         // cache and released in jitc_unit_cache_flush()
         free(kernel.llvm.reloc);
-    } else {
 #if defined(DRJIT_ENABLE_METAL)
-        if ((state.backends & (1u << (uint32_t) JitBackend::CUDA)) == 0 &&
-            (state.backends & (1u << (uint32_t) JitBackend::Metal)) != 0) {
-            // Metal kernel.
-            extern void jitc_metal_kernel_free(Kernel &);
-            jitc_metal_kernel_free(const_cast<Kernel &>(kernel));
-            return;
-        }
+    } else if (jitc_is_metal(kernel.backend)) {
+        extern void jitc_metal_kernel_free(Kernel &);
+        jitc_metal_kernel_free(const_cast<Kernel &>(kernel));
 #endif
 #if defined(DRJIT_ENABLE_CUDA)
+    } else if (jitc_is_cuda(kernel.backend)) {
         const CUDADevice &device = state.devices.at(device_id);
         scoped_set_context guard(device.context);
         if (kernel.size) {
@@ -692,11 +688,13 @@ void jitc_kernel_free(int device_id, const Kernel &kernel) {
             jitc_optix_free(kernel);
 #endif
         }
-#else
-        (void) device_id;
-        (void) kernel;
 #endif
+    } else {
+        jitc_fail("jit_kernel_free(): unsupported backend \"%s\"!",
+                  jitc_backend_name(kernel.backend));
     }
+
+    (void) device_id;
 }
 
 void jitc_flush_kernel_cache() {

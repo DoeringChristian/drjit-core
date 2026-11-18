@@ -52,6 +52,7 @@ struct KernelIsectUnit {
 struct Kernel {
     uint32_t size;
     uint32_t operation_count;
+    JitBackend backend;
 
     /// Generated source code and its length
     char *src;

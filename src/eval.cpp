@@ -609,7 +609,11 @@ void jitc_assemble(ThreadState *ts, ScheduledGroup group) {
         jitc_metal_assemble(ts, group, n_regs, (uint32_t) kernel_params.size());
     else
 #endif
+    if (jitc_is_llvm(backend))
         jitc_llvm_assemble(ts, group);
+    else
+        jitc_fail("jit_assemble(): unsupported backend \"%s\"!",
+                  jitc_backend_name(backend));
 
     // Assign callable indices (determines the dispatch table/VFT/SBT layout)
     jitc_unit_finalize(backend);
@@ -726,6 +730,7 @@ Task *jitc_run(ThreadState *ts, ScheduledGroup group) {
     Kernel kernel;
     memset(&kernel, 0, sizeof(Kernel)); // quench uninitialized variable warning on MSVC
     kernel.operation_count = n_ops_total;
+    kernel.backend = ts->backend;
 
     if (it == state.kernel_cache.end()) {
         bool cache_hit = false;
@@ -749,9 +754,12 @@ Task *jitc_run(ThreadState *ts, ScheduledGroup group) {
             cache_hit = jitc_metal_kernel_compile(ts, kernel);
         } else
 #endif
-        {
+        if (jitc_is_llvm(ts->backend)) {
             ProfilerPhase profiler(profiler_region_backend_compile);
             cache_hit = jitc_llvm_kernel_compile(kernel);
+        } else {
+            jitc_fail("jit_run(): unsupported backend \"%s\"!",
+                      jitc_backend_name(ts->backend));
         }
 
         // Persist per-slot parameter metadata (writability + resource kind)
