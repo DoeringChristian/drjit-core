@@ -98,7 +98,11 @@ static void jitc_vulkan_declare_ptr_type(VarType vt) {
 static void jitc_vulkan_declare_const(VarType vt, uint32_t value) {
     jitc_vulkan_declare_type(vt);
     const char *name = type_name_spirv[(int) vt];
-    fmt_intrinsic("%c_$s_$u = OpConstant %$s $u", name, value, name, value);
+    if (vt == VarType::Bool)
+        fmt_intrinsic("%c_bool_$u = $s %bool", value,
+                      value ? "OpConstantTrue" : "OpConstantFalse");
+    else
+        fmt_intrinsic("%c_$s_$u = OpConstant %$s $u", name, value, name, value);
 }
 
 /// Unsigned integer type with the same size as 'vt'
@@ -120,30 +124,80 @@ static void jitc_vulkan_render_param(const Variable *v) {
         v, v->param_offset, v, v, v, v);
 }
 
-/// Compute a pointer '%<v>_ep' to the element of ``v`` processed by this
-/// thread. Booleans are stored as bytes.
-static void jitc_vulkan_render_element_ptr(const Variable *v) {
+/// Compute a pointer '%<v>_<tag>p' to the element '%r<index>' of an array of
+/// type 'vt' at address '%r<base><suffix>'. Booleans are stored as bytes. The
+/// tag distinguishes the accesses of a variable (e.g. a gathered output).
+static void jitc_vulkan_render_element_ptr(const Variable *v, const char *tag,
+                                           VarType vt, uint32_t base,
+                                           const char *suffix, uint32_t index) {
+    if (vt == VarType::Bool)
+        vt = VarType::UInt8;
+    jitc_vulkan_declare_ptr_type(vt);
+    uint32_t isize = type_size[(int) vt];
+    jitc_vulkan_declare_const(VarType::UInt64, isize);
+    fmt("%$v_$si = OpUConvert %u64 %r$u\n"
+        "%$v_$so = OpIMul %u64 %$v_$si %c_u64_$u\n"
+        "%$v_$sa = OpIAdd %u64 %r$u$s %$v_$so\n"
+        "%$v_$sp = OpConvertUToPtr %ptr_$s %$v_$sa\n",
+        v, tag, index,
+        v, tag, v, tag, isize,
+        v, tag, base, suffix, v, tag,
+        v, tag, type_name_spirv[(int) vt], v, tag);
+}
+
+/// Compute a pointer '%<v>_ep' to the element of the kernel input/output ``v``
+/// processed by this thread
+static void jitc_vulkan_render_param_ptr(const Variable *v) {
     if (v->is_array())
-        jitc_raise("jitc_vulkan_render_element_ptr(): memory accesses to "
+        jitc_raise("jitc_vulkan_render_param_ptr(): memory accesses to "
                    "variable r%u (type=%s) are not yet supported by the "
                    "Vulkan backend.", v->reg_index, type_name[v->type]);
 
     VarType vt = (VarType) v->type;
-    if (vt == VarType::Bool)
-        vt = VarType::UInt8;
-    jitc_vulkan_declare_ptr_type(vt);
-    const char *name = type_name_spirv[(int) vt];
-
     if (v->size > 1) {
-        uint32_t isize = type_size[v->type];
-        jitc_vulkan_declare_const(VarType::UInt64, isize);
-        fmt("%$v_ei = OpUConvert %u64 %r0\n"
-            "%$v_eo = OpIMul %u64 %$v_ei %c_u64_$u\n"
-            "%$v_ea = OpIAdd %u64 %$v_pd %$v_eo\n"
-            "%$v_ep = OpConvertUToPtr %ptr_$s %$v_ea\n",
-            v, v, v, isize, v, v, v, v, name, v);
+        jitc_vulkan_render_element_ptr(v, "e", vt, v->reg_index, "_pd", 0);
     } else {
-        fmt("%$v_ep = OpConvertUToPtr %ptr_$s %$v_pd\n", v, name, v);
+        if (vt == VarType::Bool)
+            vt = VarType::UInt8;
+        jitc_vulkan_declare_ptr_type(vt);
+        fmt("%$v_ep = OpConvertUToPtr %ptr_$s %$v_pd\n", v,
+            type_name_spirv[(int) vt], v);
+    }
+}
+
+/// Load '%<v><suffix>' from the pointer '%<v>_<tag>p'
+static void jitc_vulkan_render_load(const Variable *v, const char *tag,
+                                    const char *suffix) {
+    if (jitc_is_bool(v)) {
+        // 8-bit storage only permits loads, stores, and conversions
+        jitc_vulkan_declare_const(VarType::UInt32, 0);
+        fmt("%$v_$sm = OpLoad %u8 %$v_$sp Aligned 1\n"
+            "%$v_$sw = OpUConvert %u32 %$v_$sm\n"
+            "%$v$s = OpINotEqual %bool %$v_$sw %c_u32_0\n",
+            v, tag, v, tag,
+            v, tag, v, tag,
+            v, suffix, v, tag);
+    } else {
+        fmt("%$v$s = OpLoad %$t %$v_$sp Aligned $u\n", v, suffix, v, v, tag,
+            (uint32_t) type_size[v->type]);
+    }
+}
+
+/// Store ``value`` through the pointer '%<v>_<tag>p'
+static void jitc_vulkan_render_store(const Variable *v, const char *tag,
+                                     const Variable *value) {
+    if (jitc_is_bool(value)) {
+        jitc_vulkan_declare_const(VarType::UInt32, 0);
+        jitc_vulkan_declare_const(VarType::UInt32, 1);
+        fmt("%$v_$sw = OpSelect %u32 %$v %c_u32_1 %c_u32_0\n"
+            "%$v_$sm = OpUConvert %u8 %$v_$sw\n"
+            "OpStore %$v_$sp %$v_$sm Aligned 1\n",
+            v, tag, value,
+            v, tag, v, tag,
+            v, tag, v, tag);
+    } else {
+        fmt("OpStore %$v_$sp %$v Aligned $u\n", v, tag, value,
+            (uint32_t) type_size[value->type]);
     }
 }
 
@@ -216,7 +270,6 @@ void jitc_vulkan_assemble(ThreadState *ts, ScheduledGroup group,
         uint32_t index = schedule[gi].index;
         Variable *v = jitc_var(index);
         ParamType ptype = (ParamType) v->param_type;
-        bool is_bool = (VarType) v->type == VarType::Bool;
 
         jitc_vulkan_declare_type((VarType) v->type);
 
@@ -234,17 +287,8 @@ void jitc_vulkan_assemble(ThreadState *ts, ScheduledGroup group,
             }
 
             jitc_vulkan_render_param(v);
-            jitc_vulkan_render_element_ptr(v);
-            if (is_bool) {
-                // 8-bit storage only permits loads, stores, and conversions
-                fmt("%$v_bm = OpLoad %u8 %$v_ep Aligned 1\n"
-                    "%$v_bw = OpUConvert %u32 %$v_bm\n"
-                    "%$v = OpINotEqual %bool %$v_bw %c_u32_0\n",
-                    v, v, v, v, v, v);
-            } else {
-                fmt("%$v = OpLoad %$t %$v_ep Aligned $u\n", v, v, v,
-                    (uint32_t) type_size[v->type]);
-            }
+            jitc_vulkan_render_param_ptr(v);
+            jitc_vulkan_render_load(v, "e", "");
             continue;
         }
 
@@ -252,17 +296,8 @@ void jitc_vulkan_assemble(ThreadState *ts, ScheduledGroup group,
 
         if (ptype == ParamType::Output) {
             jitc_vulkan_render_param(v);
-            jitc_vulkan_render_element_ptr(v);
-            if (is_bool) {
-                jitc_vulkan_declare_const(VarType::UInt32, 1);
-                fmt("%$v_bw = OpSelect %u32 %$v %c_u32_1 %c_u32_0\n"
-                    "%$v_bm = OpUConvert %u8 %$v_bw\n"
-                    "OpStore %$v_ep %$v_bm Aligned 1\n",
-                    v, v, v, v, v, v);
-            } else {
-                fmt("OpStore %$v_ep %$v Aligned $u\n", v, v,
-                    (uint32_t) type_size[v->type]);
-            }
+            jitc_vulkan_render_param_ptr(v);
+            jitc_vulkan_render_store(v, "e", v);
         }
     }
 
@@ -333,6 +368,34 @@ static void jitc_vulkan_render_bitwise(Variable *v, const char *op,
             v, v, a0, v, v, a1, v, op, v, v, v, v, v, v);
     else
         fmt("%$v = $s %$t %$v %$v\n", v, op, v, a0, a1);
+}
+
+/// Emit a scatter operation, skipping the store for masked lanes
+static void jitc_vulkan_render_scatter(Variable *v) {
+    Variable *ptr   = jitc_var(v->dep[0]),
+             *value = jitc_var(v->dep[1]),
+             *index = jitc_var(v->dep[2]),
+             *mask  = jitc_var(v->dep[3]);
+
+    if ((ReduceOp) (uint32_t) v->literal != ReduceOp::Identity)
+        jitc_raise("jitc_vulkan_render_scatter(): scatter-reductions are not "
+                   "yet supported by the Vulkan backend.");
+
+    bool is_unmasked = mask->is_literal() && mask->literal == 1;
+    jitc_vulkan_render_element_ptr(v, "g", (VarType) value->type,
+                                   ptr->reg_index, "", index->reg_index);
+
+    if (!is_unmasked)
+        fmt("OpSelectionMerge %$v_e None\n"
+            "OpBranchConditional %$v %$v_t %$v_e\n"
+            "%$v_t = OpLabel\n",
+            v, mask, v, v, v);
+
+    jitc_vulkan_render_store(v, "g", value);
+
+    if (!is_unmasked)
+        fmt("OpBranch %$v_e\n"
+            "%$v_e = OpLabel\n", v, v);
 }
 
 /// Emit a half precision division, square root, or reciprocal in single
@@ -508,13 +571,13 @@ static void jitc_vulkan_render(Variable *v) {
         case VarKind::Nop:
             break;
 
+        case VarKind::Undefined:
         case VarKind::Literal:
             // Constants are named after their value, so that the body of a
             // callable (which determines its hash) references the value, and
             // the declarations of different units coincide
             if (vt == VarType::Bool) {
-                fmt_intrinsic("%c_bool_$u = $s %bool", v->literal ? 1 : 0,
-                              v->literal ? "OpConstantTrue" : "OpConstantFalse");
+                jitc_vulkan_declare_const(vt, v->literal ? 1 : 0);
                 fmt("%$v = OpCopyObject %bool %c_bool_$u\n", v,
                     v->literal ? 1 : 0);
             } else {
@@ -531,6 +594,65 @@ static void jitc_vulkan_render(Variable *v) {
 
         case VarKind::Counter:
             fmt("%$v = OpCopyObject %$t %r0\n", v, v);
+            break;
+
+        // -- Bounds check: record the first offending index of an active lane
+        // in the buffer 'a2', and disable the lane --
+        case VarKind::BoundsCheck: {
+            uint32_t size = (uint32_t) v->literal;
+            jitc_vulkan_declare_const(VarType::UInt32, size);
+            fmt("%$v_o = OpUGreaterThanEqual %bool %$v %c_u32_$u\n"
+                "%$v_c = OpLogicalAnd %bool %$v_o %$v\n"
+                "OpSelectionMerge %$v_e None\n"
+                "OpBranchConditional %$v_c %$v_t %$v_e\n"
+                "%$v_t = OpLabel\n"
+                "%$v_p = OpConvertUToPtr %ptr_u32 %$v\n"
+                "OpStore %$v_p %$v Aligned 4\n"
+                "OpBranch %$v_e\n"
+                "%$v_e = OpLabel\n"
+                "%$v = OpLogicalNotEqual %bool %$v_c %$v\n",
+                v, a0, size,
+                v, v, a1,
+                v,
+                v, v, v,
+                v,
+                v, a2,
+                v, a0,
+                v,
+                v,
+                v, v, a1);
+            break;
+        }
+
+        // -- Memory operations --
+        case VarKind::Gather: {
+            bool is_unmasked = a2->is_literal() && a2->literal == 1;
+            jitc_vulkan_render_element_ptr(v, "g", vt, a0->reg_index, "",
+                                           a1->reg_index);
+            if (is_unmasked) {
+                jitc_vulkan_render_load(v, "g", "");
+            } else {
+                // Masked lanes skip the load (their index may be invalid) and
+                // produce zero
+                jitc_vulkan_declare_const(vt, 0);
+                fmt("OpSelectionMerge %$v_e None\n"
+                    "OpBranchConditional %$v %$v_t %$v_f\n"
+                    "%$v_t = OpLabel\n",
+                    v, a2, v, v, v);
+                jitc_vulkan_render_load(v, "g", "_l");
+                fmt("OpBranch %$v_e\n"
+                    "%$v_f = OpLabel\n"
+                    "OpBranch %$v_e\n"
+                    "%$v_e = OpLabel\n"
+                    "%$v = OpPhi %$t %$v_l %$v_t %c_$t_0 %$v_f\n",
+                    v, v, v, v,
+                    v, v, v, v, v, v);
+            }
+            break;
+        }
+
+        case VarKind::Scatter:
+            jitc_vulkan_render_scatter(v);
             break;
 
         // -- Arithmetic --
