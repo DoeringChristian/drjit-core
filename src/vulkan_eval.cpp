@@ -34,6 +34,7 @@
 #include "strbuf.h"
 #include "vulkan_eval.h"
 #include "vulkan_scatter.h"
+#include "vulkan_packet.h"
 #include "vulkan.h"
 
 // Forward declaration
@@ -631,6 +632,14 @@ static void jitc_vulkan_render(Variable *v) {
             }
             break;
         }
+
+        case VarKind::PacketGather:
+            jitc_vulkan_render_gather_packet(v, a0, a1, a2);
+            break;
+
+        case VarKind::PacketScatter:
+            jitc_vulkan_render_scatter_packet(v, a0, a1, a2);
+            break;
 
         case VarKind::Scatter:     jitc_vulkan_render_scatter(v);      break;
         case VarKind::ScatterInc:  jitc_vulkan_render_scatter_inc(v);  break;
