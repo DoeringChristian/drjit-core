@@ -47,6 +47,10 @@
 #  include "metal_tex.h"
 #endif
 
+#if defined(DRJIT_ENABLE_VULKAN)
+#  include "vulkan_ts.h"
+#endif
+
 #include <nanothread/nanothread.h>
 
 void jit_init(uint32_t backends) {
@@ -389,6 +393,56 @@ uint32_t jit_llvm_block_size() {
 
 uint32_t jit_llvm_thread_count() {
     return pool_size(nullptr);
+}
+
+// ==========================================================================
+//                          Vulkan-specific API
+// ==========================================================================
+
+int jit_vulkan_device_count() {
+    lock_guard guard(state.lock);
+#if defined(DRJIT_ENABLE_VULKAN)
+    return (int) state.vulkan_devices.size();
+#else
+    return 0;
+#endif
+}
+
+void jit_vulkan_set_device(int device) {
+    lock_guard guard(state.lock);
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (device < 0 || (size_t) device >= state.vulkan_devices.size())
+        jit_raise("jit_vulkan_set_device(%i): out of range (have %i devices).",
+                  device, (int) state.vulkan_devices.size());
+
+    ThreadState *ts = thread_state(JitBackend::Vulkan);
+    if (ts->device == device)
+        return;
+
+    // Finish all work on the current device
+    ((VulkanThreadState *) ts->actual_state())->flush(/* wait = */ true);
+
+    VulkanDevice &dev = state.vulkan_devices[device];
+    ts->device = device;
+    ts->vulkan_device   = dev.device;
+    ts->vulkan_queue    = dev.queue;
+    ts->vulkan_pool     = dev.pool;
+    ts->vulkan_timeline = dev.timeline;
+    ts->vulkan_last     = 0;
+#else
+    (void) device;
+    jit_raise("jit_vulkan_set_device(): the Vulkan backend is not enabled in "
+              "this build of Dr.Jit.");
+#endif
+}
+
+int jit_vulkan_device() {
+    lock_guard guard(state.lock);
+#if defined(DRJIT_ENABLE_VULKAN)
+    return thread_state(JitBackend::Vulkan)->device;
+#else
+    return -1;
+#endif
 }
 
 // ==========================================================================

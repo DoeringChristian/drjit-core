@@ -11,14 +11,240 @@
 
 #include "vulkan.h"
 #include "vulkan_api.h"
+#include "vulkan_ts.h"
+#include "buffer_map.h"
 #include "internal.h"
 #include "log.h"
 
 #include <cstring>
 #include <cstdlib>
 #include <vector>
+#include <thread>
 
 static VkInstance jitc_vulkan_instance = nullptr;
+
+/// Memory properties of each entry of ``state.vulkan_devices``
+static std::vector<VkPhysicalDeviceMemoryProperties> vulkan_memory_properties;
+
+// ============================================================================
+// Buffer API
+// ============================================================================
+
+/// Return the index of a memory type in ``type_bits`` with the ``required``
+/// properties, preferring one that also has the ``preferred`` properties.
+/// Returns -1 if there is no such memory type.
+static int vulkan_memory_type(const VkPhysicalDeviceMemoryProperties &props,
+                              uint32_t type_bits,
+                              VkMemoryPropertyFlags required,
+                              VkMemoryPropertyFlags preferred) {
+    int result = -1;
+    for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+        VkMemoryPropertyFlags flags = props.memoryTypes[i].propertyFlags;
+        if (!(type_bits & (1u << i)) || (flags & required) != required)
+            continue;
+        if ((flags & preferred) == preferred)
+            return (int) i;
+        if (result < 0)
+            result = (int) i;
+    }
+    return result;
+}
+
+void *vulkan_buffer_new(int device, size_t size, bool shared, void **ptr_out) {
+    VkDevice dev = (VkDevice) state.vulkan_devices[device].device;
+
+    VkBufferCreateInfo buffer_info {};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = size;
+    buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                        VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkBuffer buffer = VK_NULL_HANDLE;
+    if (vkCreateBuffer(dev, &buffer_info, nullptr, &buffer) != VK_SUCCESS)
+        return nullptr;
+
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(dev, buffer, &req);
+
+    // Shared memory is read back by the host, hence prefer cached memory
+    int type = shared
+        ? vulkan_memory_type(vulkan_memory_properties[device],
+                             req.memoryTypeBits,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
+        : vulkan_memory_type(vulkan_memory_properties[device],
+                             req.memoryTypeBits,
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+
+    VkMemoryAllocateFlagsInfo flags_info {};
+    flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+    flags_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+
+    VkMemoryAllocateInfo alloc_info {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc_info.pNext = &flags_info;
+    alloc_info.allocationSize = req.size;
+    alloc_info.memoryTypeIndex = (uint32_t) type;
+
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    if (type < 0 ||
+        vkAllocateMemory(dev, &alloc_info, nullptr, &memory) != VK_SUCCESS) {
+        vkDestroyBuffer(dev, buffer, nullptr);
+        return nullptr;
+    }
+
+    vulkan_check(vkBindBufferMemory(dev, buffer, memory, 0));
+
+    if (shared) {
+        vulkan_check(vkMapMemory(dev, memory, 0, VK_WHOLE_SIZE, 0, ptr_out));
+    } else {
+        VkBufferDeviceAddressInfo address_info {};
+        address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        address_info.buffer = buffer;
+        *ptr_out = (void *) (uintptr_t) vkGetBufferDeviceAddress(dev, &address_info);
+    }
+
+    return new VulkanBuffer { dev, buffer, memory };
+}
+
+void vulkan_buffer_free(void *buffer) {
+    VulkanBuffer *b = (VulkanBuffer *) buffer;
+    vkDestroyBuffer((VkDevice) b->device, (VkBuffer) b->buffer, nullptr);
+    vkFreeMemory((VkDevice) b->device, (VkDeviceMemory) b->memory, nullptr);
+    delete b;
+}
+
+/// Maps Dr.Jit pointers to the VulkanBuffer that contains them
+static BufferMap vulkan_buffer_map;
+
+void jitc_vulkan_register_buffer(void *ptr, void *buffer, size_t size) {
+    // Device addresses and mapped host pointers share this map. Vulkan does
+    // not guarantee that their address ranges are disjoint.
+    size_t offset;
+    if (unlikely(vulkan_buffer_map.find(ptr, &offset)))
+        jitc_fail("jit_malloc(): the Vulkan allocation at " DRJIT_PTR
+                  " overlaps an existing allocation!", (uintptr_t) ptr);
+    vulkan_buffer_map.insert(ptr, buffer, size);
+}
+
+void *jitc_vulkan_find_buffer(void *ptr, size_t *offset_out) {
+    return vulkan_buffer_map.find(ptr, offset_out);
+}
+
+void *jitc_vulkan_unregister_buffer(void *ptr) {
+    return vulkan_buffer_map.remove(ptr);
+}
+
+// ============================================================================
+//  Completion threads
+// ============================================================================
+
+/**
+ * Vulkan cannot notify the host when work completes. Each device therefore has
+ * a thread that waits on the timeline semaphore and invokes host callbacks
+ * once the timeline reaches their value, like the driver threads of CUDA
+ * (cuLaunchHostFunc) and Metal (completion handlers). The callbacks run
+ * without holding the Dr.Jit lock.
+ *
+ * Callbacks are queued with the device's most recent timeline value, hence the
+ * queue is sorted and processed in order. An idle thread sleeps on the 'wake'
+ * semaphore, which the host signals when a callback arrives or at shutdown.
+ */
+struct VulkanCompletion {
+    struct Callback {
+        uint64_t value;
+        void (*callback)(void *);
+        void *payload;
+    };
+
+    /// Protects the fields below
+    Lock lock;
+
+    /// Callbacks waiting for the timeline, sorted by value
+    std::vector<Callback> pending;
+
+    /// Host-signaled timeline semaphore that wakes the idle thread
+    VkSemaphore wake = VK_NULL_HANDLE;
+    uint64_t wake_value = 0;
+
+    /// Set during shutdown
+    bool stop = false;
+
+    std::thread thread;
+};
+
+/// Completion thread state of each entry of ``state.vulkan_devices``
+static std::vector<VulkanCompletion *> vulkan_completions;
+
+static VkSemaphore jitc_vulkan_create_timeline(VkDevice device) {
+    VkSemaphoreTypeCreateInfo type_info {};
+    type_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+    type_info.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+
+    VkSemaphoreCreateInfo semaphore_info {};
+    semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    semaphore_info.pNext = &type_info;
+
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    vulkan_check(vkCreateSemaphore(device, &semaphore_info, nullptr, &semaphore));
+    return semaphore;
+}
+
+/// Wake the idle completion thread. Requires ``c->lock``, which keeps the
+/// signaled values increasing.
+static void jitc_vulkan_wake(VulkanCompletion *c, VkDevice device) {
+    VkSemaphoreSignalInfo signal_info {};
+    signal_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
+    signal_info.semaphore = c->wake;
+    signal_info.value = ++c->wake_value;
+    vulkan_check(vkSignalSemaphore(device, &signal_info));
+}
+
+static void jitc_vulkan_completion_thread(VulkanCompletion *c, VkDevice device,
+                                          VkSemaphore timeline) {
+    while (true) {
+        VulkanCompletion::Callback cb;
+        uint64_t wake;
+        bool idle;
+
+        /* Fetch the next callback */ {
+            lock_guard guard(c->lock);
+            idle = c->pending.empty();
+            if (idle && c->stop)
+                break;
+            if (!idle)
+                cb = c->pending.front();
+            wake = c->wake_value + 1;
+        }
+
+        if (idle) {
+            vulkan_wait(device, c->wake, wake);
+            continue;
+        }
+
+        vulkan_wait(device, timeline, cb.value);
+        cb.callback(cb.payload);
+
+        lock_guard guard(c->lock);
+        c->pending.erase(c->pending.begin());
+    }
+}
+
+void jitc_vulkan_enqueue_callback(int device, void (*callback)(void *),
+                                  void *payload) {
+    VulkanCompletion *c = vulkan_completions[device];
+    const VulkanDevice &dev = state.vulkan_devices[device];
+
+    lock_guard guard(c->lock);
+    c->pending.push_back({ dev.submitted, callback, payload });
+
+    if (c->pending.size() == 1)
+        jitc_vulkan_wake(c, (VkDevice) dev.device);
+}
 
 // ============================================================================
 //  Backend init / shutdown
@@ -202,25 +428,103 @@ bool jitc_vulkan_init() {
         device.queue_family = family;
         vkGetDeviceQueue(dev, family, 0, (VkQueue *) &device.queue);
 
+        VkCommandPoolCreateInfo pool_info {};
+        pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        pool_info.queueFamilyIndex = family;
+        vulkan_check(vkCreateCommandPool(dev, &pool_info, nullptr,
+                                         (VkCommandPool *) &device.pool));
+
+        device.timeline = jitc_vulkan_create_timeline(dev);
+
         size_t len = std::strlen(p.deviceName);
         device.name = (char *) std::malloc(len + 1);
         std::memcpy(device.name, p.deviceName, len + 1);
 
+        VkPhysicalDeviceMemoryProperties memory_properties;
+        vkGetPhysicalDeviceMemoryProperties(pdev, &memory_properties);
+
+        VulkanCompletion *completion = new VulkanCompletion();
+        lock_init(completion->lock);
+        completion->wake = jitc_vulkan_create_timeline(dev);
+        completion->thread =
+            std::thread(jitc_vulkan_completion_thread, completion, dev,
+                        (VkSemaphore) device.timeline);
+
         state.vulkan_devices.push_back(device);
+        vulkan_memory_properties.push_back(memory_properties);
+        vulkan_completions.push_back(completion);
     }
 
     return !state.vulkan_devices.empty();
 }
 
+void vulkan_wait(void *device, void *timeline, uint64_t value) {
+    VkSemaphore semaphore = (VkSemaphore) timeline;
+
+    VkSemaphoreWaitInfo wait_info {};
+    wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    wait_info.semaphoreCount = 1;
+    wait_info.pSemaphores = &semaphore;
+    wait_info.pValues = &value;
+    vulkan_check(vkWaitSemaphores((VkDevice) device, &wait_info, UINT64_MAX));
+}
+
+void jitc_vulkan_sync(ThreadState *ts) {
+    VulkanThreadState *vts = (VulkanThreadState *) ts->actual_state();
+    vts->flush(/* wait = */ false);
+
+    // Release the lock while waiting
+    unlock_guard guard(state.lock);
+    vulkan_wait(vts->vulkan_device, vts->vulkan_timeline, vts->vulkan_last);
+}
+
+void jitc_vulkan_flush(ThreadState *ts) {
+    ((VulkanThreadState *) ts->actual_state())->flush(/* wait = */ false);
+}
+
+void jitc_vulkan_sync_devices() {
+    std::vector<VulkanDevice> devices = state.vulkan_devices;
+
+    // Release the lock while waiting
+    unlock_guard guard(state.lock);
+    for (const VulkanDevice &dev : devices)
+        vulkan_wait(dev.device, dev.timeline, dev.submitted);
+}
+
 void jitc_vulkan_shutdown() {
     jitc_log(Info, "jit_vulkan_shutdown()");
 
-    for (VulkanDevice &dev : state.vulkan_devices) {
+    for (size_t i = 0; i < state.vulkan_devices.size(); ++i) {
+        VulkanDevice &dev = state.vulkan_devices[i];
+        VulkanCompletion *c = vulkan_completions[i];
+
+        /* Run the remaining callbacks, then stop the completion thread */ {
+            lock_guard guard(c->lock);
+            c->stop = true;
+            jitc_vulkan_wake(c, (VkDevice) dev.device);
+        }
+
+        /* Callbacks may acquire the Dr.Jit lock */ {
+            unlock_guard guard(state.lock);
+            c->thread.join();
+        }
+        vkDestroySemaphore((VkDevice) dev.device, c->wake, nullptr);
+        lock_destroy(c->lock);
+        delete c;
+
         vulkan_check(vkDeviceWaitIdle((VkDevice) dev.device));
+        vkDestroySemaphore((VkDevice) dev.device, (VkSemaphore) dev.timeline,
+                           nullptr);
+        vkDestroyCommandPool((VkDevice) dev.device, (VkCommandPool) dev.pool,
+                             nullptr);
         vkDestroyDevice((VkDevice) dev.device, nullptr);
         std::free(dev.name);
     }
     state.vulkan_devices.clear();
+    vulkan_memory_properties.clear();
+    vulkan_completions.clear();
+    vulkan_buffer_map.clear();
 
     if (jitc_vulkan_instance) {
         if (vkDestroyInstance)

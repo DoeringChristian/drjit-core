@@ -350,6 +350,25 @@ extern JIT_EXPORT void *jit_metal_queue();
 extern JIT_EXPORT int jit_metal_supports_ray_tracing();
 
 // ====================================================================
+//                        Vulkan-specific functionality
+// ====================================================================
+
+/// Return the number of available Vulkan devices that are compatible with Dr.Jit.
+extern JIT_EXPORT int jit_vulkan_device_count();
+
+/**
+ * \brief Set the active Vulkan device.
+ *
+ * The argument must be between 0 and <tt>jit_vulkan_device_count() - 1</tt>.
+ * This is a per-thread property: independent threads can optionally issue
+ * computation to different GPUs.
+ */
+extern JIT_EXPORT void jit_vulkan_set_device(int device);
+
+/// Return the Vulkan device ID associated with the current thread
+extern JIT_EXPORT int jit_vulkan_device();
+
+// ====================================================================
 //                        Logging infrastructure
 // ====================================================================
 

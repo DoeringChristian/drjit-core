@@ -777,6 +777,14 @@ struct VulkanDevice {
     void *queue;
     uint32_t queue_family;
 
+    /// VkCommandPool that command buffers are allocated from
+    void *pool;
+
+    /// Timeline VkSemaphore signaled by every submission to 'queue', and the
+    /// value of the most recent signal operation
+    void *timeline;
+    uint64_t submitted;
+
     /// Cached human-readable device name (owned, freed at shutdown)
     char *name;
 };
@@ -911,6 +919,24 @@ struct ThreadStateBase {
 
     /// Maximum threads per threadgroup
     uint32_t metal_max_threads = 1024;
+#endif
+
+    /// ---------------------------- Vulkan-specific ---------------------------
+
+#if defined(DRJIT_ENABLE_VULKAN)
+    /// VkDevice handle — opaque to keep Vulkan types out of shared headers
+    void *vulkan_device = nullptr;
+
+    /// VkQueue, VkCommandPool, and timeline VkSemaphore of the device
+    void *vulkan_queue = nullptr;
+    void *vulkan_pool = nullptr;
+    void *vulkan_timeline = nullptr;
+
+    /// A VkCommandBuffer with pending work
+    void *vulkan_cb = nullptr;
+
+    /// Timeline value signaled by the most recent submission of this thread
+    uint64_t vulkan_last = 0;
 #endif
 };
 
@@ -1265,6 +1291,9 @@ struct ThreadLocal {
 #if defined(DRJIT_ENABLE_METAL)
     ThreadState *ts_metal = nullptr;
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    ThreadState *ts_vulkan = nullptr;
+#endif
 
     // Compilation flags
     uint32_t flags = (uint32_t) JitFlag::Default;
@@ -1287,6 +1316,9 @@ struct ThreadLocal {
 #if defined(DRJIT_ENABLE_METAL)
 #  define thread_state_metal (tls.ts_metal)
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+#  define thread_state_vulkan (tls.ts_vulkan)
+#endif
 #define jitc_flags_v      (tls.flags)
 #define default_backend   (tls.def_backend)
 
@@ -1308,6 +1340,12 @@ inline ThreadState *thread_state(JitBackend backend) {
 #if defined(DRJIT_ENABLE_METAL)
         case JitBackend::Metal:
             result = thread_state_metal;
+            break;
+#endif
+
+#if defined(DRJIT_ENABLE_VULKAN)
+        case JitBackend::Vulkan:
+            result = thread_state_vulkan;
             break;
 #endif
 

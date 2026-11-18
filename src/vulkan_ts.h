@@ -1,0 +1,91 @@
+/*
+    src/vulkan_ts.h -- ThreadState specialization for the Vulkan backend
+
+    Copyright (c) 2026 Christian Döring <christian.doering@tum.de>
+
+    All rights reserved. Use of this source code is governed by a BSD-style
+    license that can be found in the LICENSE file.
+*/
+
+#pragma once
+
+#include "internal.h"
+
+#if defined(DRJIT_ENABLE_VULKAN)
+
+struct VulkanThreadState final : ThreadState {
+    VulkanThreadState() = default;
+    ~VulkanThreadState();
+
+    // -- Command buffer lifecycle (defined in vulkan_ts.cpp) -----------------
+    /// Return the pending command buffer, opening one on first use
+    void *ensure_cmdbuf();
+
+    /// Submit the pending command buffer (if one is open) and, when ``wait`` is
+    /// set, block until all work submitted by this thread has finished.
+    void flush(bool wait);
+
+    /// The Vulkan backend uses barrier() as a hint to submit the command buffer
+    void barrier() override;
+
+    void flush_deferred_free() override;
+
+    // ------- ThreadState API -------
+
+    Task *launch(Kernel kernel, KernelKey &key, XXH128_hash_t hash,
+                 uint32_t size, std::vector<void *> &kernel_params,
+                 const std::vector<uint32_t> &kernel_param_ids,
+                 KernelHistoryEntry *kernel_history_entry) override;
+
+    /// Fill a device memory region with constants of a given type
+    void memset_async(void *ptr, uint32_t size, uint32_t isize,
+                      const void *src) override;
+
+    /// Reduce elements within blocks
+    void block_reduce(VarType vt, ReduceOp op, uint32_t size,
+                      uint32_t block_size, const void *in, void *out) override;
+
+    /// Implements various kinds of prefix reductions
+    void block_prefix_reduce(VarType vt, ReduceOp op, uint32_t size,
+                             uint32_t block_size, bool exclusive, bool reverse,
+                             const void *in, void *out) override;
+
+    /// Compute a dot product of two equal-sized arrays
+    void reduce_dot(VarType type, const void *ptr_1, const void *ptr_2,
+                    uint32_t size, void *out) override;
+
+    /// Row-major GEMM
+    void batched_gemm(VarType vt, bool At, bool Bt,
+                      uint32_t M, uint32_t N, uint32_t K,
+                      const GemmBatch *batch,
+                      const void *A, const void *B, void *C) override;
+
+    /// Mask compression
+    uint32_t compress(const uint8_t *in, uint32_t size, uint32_t *out) override;
+
+    /// Compute a permutation to reorder an integer array into discrete groups
+    uint32_t block_mkperm(const uint32_t *values, uint32_t size,
+                          uint32_t block_size, uint32_t bucket_count,
+                          uint32_t *perm, uint32_t *offsets) override;
+
+    /// Perform a synchronous copy operation
+    void memcpy(void *dst, const void *src, size_t size) override;
+
+    /// Perform an asynchronous copy operation
+    void memcpy_async(void *dst, const void *src, size_t size) override;
+
+    /// Asynchronously update a single element in memory
+    void poke(void *dst, const void *src, uint32_t size) override;
+
+    void aggregate(void *dst, AggregationEntry *agg, uint32_t size) override;
+
+    /// Enqueue a host callback that runs on the device's completion thread
+    /// once the work submitted so far has finished
+    void enqueue_host_func(void (*callback)(void *), void *payload) override;
+
+    /// Pack matrices/vectors for the cooperative vector API
+    void coop_vec_pack(uint32_t count, const void *in, const MatrixDescr *in_d,
+                       void *out, const MatrixDescr *out_d) override;
+};
+
+#endif // defined(DRJIT_ENABLE_VULKAN)

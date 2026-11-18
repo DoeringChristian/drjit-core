@@ -89,10 +89,31 @@ bool jitc_vulkan_api_init_instance(VkInstance instance) {
         LOAD(vkGetPhysicalDeviceProperties2);
         LOAD(vkGetPhysicalDeviceFeatures2);
         LOAD(vkGetPhysicalDeviceQueueFamilyProperties);
+        LOAD(vkGetPhysicalDeviceMemoryProperties);
         LOAD(vkCreateDevice);
         LOAD(vkDestroyDevice);
         LOAD(vkGetDeviceQueue);
         LOAD(vkDeviceWaitIdle);
+        LOAD(vkCreateBuffer);
+        LOAD(vkDestroyBuffer);
+        LOAD(vkGetBufferMemoryRequirements);
+        LOAD(vkGetBufferDeviceAddress);
+        LOAD(vkAllocateMemory);
+        LOAD(vkFreeMemory);
+        LOAD(vkBindBufferMemory);
+        LOAD(vkMapMemory);
+        LOAD(vkCreateCommandPool);
+        LOAD(vkDestroyCommandPool);
+        LOAD(vkAllocateCommandBuffers);
+        LOAD(vkFreeCommandBuffers);
+        LOAD(vkBeginCommandBuffer);
+        LOAD(vkEndCommandBuffer);
+        LOAD(vkQueueSubmit);
+        LOAD(vkCreateSemaphore);
+        LOAD(vkDestroySemaphore);
+        LOAD(vkGetSemaphoreCounterValue);
+        LOAD(vkWaitSemaphores);
+        LOAD(vkSignalSemaphore);
 
         #undef LOAD
     } while (false);
@@ -115,8 +136,16 @@ void jitc_vulkan_api_shutdown() {
     Z(vkGetInstanceProcAddr); Z(vkEnumerateInstanceVersion);
     Z(vkCreateInstance); Z(vkDestroyInstance); Z(vkEnumeratePhysicalDevices);
     Z(vkGetPhysicalDeviceProperties2); Z(vkGetPhysicalDeviceFeatures2);
-    Z(vkGetPhysicalDeviceQueueFamilyProperties); Z(vkCreateDevice);
+    Z(vkGetPhysicalDeviceQueueFamilyProperties);
+    Z(vkGetPhysicalDeviceMemoryProperties); Z(vkCreateDevice);
     Z(vkDestroyDevice); Z(vkGetDeviceQueue); Z(vkDeviceWaitIdle);
+    Z(vkCreateBuffer); Z(vkDestroyBuffer); Z(vkGetBufferMemoryRequirements);
+    Z(vkGetBufferDeviceAddress); Z(vkAllocateMemory); Z(vkFreeMemory);
+    Z(vkBindBufferMemory); Z(vkMapMemory); Z(vkCreateCommandPool);
+    Z(vkDestroyCommandPool); Z(vkAllocateCommandBuffers);
+    Z(vkFreeCommandBuffers); Z(vkBeginCommandBuffer); Z(vkEndCommandBuffer);
+    Z(vkQueueSubmit); Z(vkCreateSemaphore); Z(vkDestroySemaphore);
+    Z(vkGetSemaphoreCounterValue); Z(vkWaitSemaphores); Z(vkSignalSemaphore);
     #undef Z
 
 #if !defined(_WIN32)

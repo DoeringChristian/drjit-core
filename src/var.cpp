@@ -778,6 +778,9 @@ uint32_t jitc_var_new(Variable &v, bool disable_lvn) {
 #if defined(DRJIT_ENABLE_METAL)
         case JitBackend::Metal: ts = tl.ts_metal; break;
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+        case JitBackend::Vulkan: ts = tl.ts_vulkan; break;
+#endif
         case JitBackend::LLVM:  ts = tl.ts_llvm;  break;
         default:                ts = nullptr;      break;
     }

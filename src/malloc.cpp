@@ -21,6 +21,10 @@
 #  include "metal.h"
 #endif
 
+#if defined(DRJIT_ENABLE_VULKAN)
+#  include "vulkan.h"
+#endif
+
 // Try to use huge pages for allocations > 2M (only on Linux)
 #if defined(__linux__)
 #  define DRJIT_HUGEPAGE 1
@@ -139,6 +143,13 @@ void* jitc_malloc(JitBackend backend, size_t size, bool shared) {
     }
 #endif
 
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend)) {
+        ts = thread_state(backend);
+        device = ts->device;
+    }
+#endif
+
     AllocInfo ai = alloc_info_encode(size, backend, shared, device);
     const char *descr = nullptr;
     void *ptr = nullptr;
@@ -162,6 +173,9 @@ void* jitc_malloc(JitBackend backend, size_t size, bool shared) {
 #if defined(DRJIT_ENABLE_METAL)
         void *metal_buf = nullptr; // opaque MTLBuffer handle
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+        void *vulkan_buf = nullptr; // opaque VulkanBuffer handle
+#endif
         for (int i = 0; i < 2; ++i) {
             {
                 unlock_guard guard(state.lock);
@@ -172,6 +186,11 @@ void* jitc_malloc(JitBackend backend, size_t size, bool shared) {
                 } else if (jitc_is_metal(backend)) {
                     metal_buf =
                         metal_buffer_new(ts->metal_device, size, shared, &ptr);
+#endif
+
+#if defined(DRJIT_ENABLE_VULKAN)
+                } else if (jitc_is_vulkan(backend)) {
+                    vulkan_buf = vulkan_buffer_new(device, size, shared, &ptr);
 #endif
 
 #if defined(DRJIT_ENABLE_CUDA)
@@ -201,6 +220,10 @@ void* jitc_malloc(JitBackend backend, size_t size, bool shared) {
         // Register metal buffer given that we're holding the JIT lock again
         if (metal_buf)
             jitc_metal_register_buffer(ptr, metal_buf, size);
+#endif
+#if defined(DRJIT_ENABLE_VULKAN)
+        if (vulkan_buf)
+            jitc_vulkan_register_buffer(ptr, vulkan_buf, size);
 #endif
 
         descr = "new allocation";
@@ -276,6 +299,9 @@ void jitc_free(void *ptr) {
 #if defined(DRJIT_ENABLE_METAL)
         case JitBackend::Metal: ts = tl.ts_metal; break;
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+        case JitBackend::Vulkan: ts = tl.ts_vulkan; break;
+#endif
         case JitBackend::LLVM: ts = tl.ts_llvm; break;
         default: break;
     }
@@ -286,13 +312,15 @@ void jitc_free(void *ptr) {
     if (shared && !ts) // Leak shared allocation if Dr.Jit has already shut down
         return;
 
-    // A freed Metal buffer is not safe to reuse (by other threads) until the
-    // current thread has committed its command buffer, so park it until then
-    // (see ThreadState::free_next).
-    bool submit_deferred = !shared && backend == JitBackend::Metal && ts;
+    // A freed Metal/Vulkan buffer is not safe to reuse (by other threads) until
+    // the current thread has committed its command buffer, so park it until
+    // then (see ThreadState::free_next).
+    bool submit_deferred =
+        !shared && (jitc_is_metal(backend) || jitc_is_vulkan(backend)) && ts;
 
     // Free regular/host allocations immediately. Shared allocations are parked
-    // until their GPU work completes; Metal device allocations until submission.
+    // until their GPU work completes; Metal/Vulkan device allocations until
+    // submission.
     if (backend == JitBackend::None || (!shared && !submit_deferred)) {
         jitc_malloc_release(info, ptr);
     } else {
@@ -401,16 +429,16 @@ void* jitc_malloc_migrate(void *ptr, JitBackend dst_backend, int move) {
                jitc_backend_name(src_backend), (int) src_shared,
                jitc_backend_name(dst_backend));
 
-#if defined(DRJIT_ENABLE_METAL)
-    if (jitc_is_metal(gpu_backend)) {
+#if defined(DRJIT_ENABLE_METAL) || defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_metal(gpu_backend) || jitc_is_vulkan(gpu_backend)) {
         if (src_backend == JitBackend::None) {
             // Stage host -> device copies through a shared buffer
-            void *tmp = jitc_malloc(JitBackend::Metal, size, /*shared=*/true);
+            void *tmp = jitc_malloc(gpu_backend, size, /*shared=*/true);
             memcpy(tmp, ptr, size);
-            jitc_memcpy_async(JitBackend::Metal, ptr_new, tmp, size);
+            jitc_memcpy_async(gpu_backend, ptr_new, tmp, size);
             jitc_free(tmp);
         } else {
-            jitc_memcpy_async(JitBackend::Metal, ptr_new, ptr, size);
+            jitc_memcpy_async(gpu_backend, ptr_new, ptr, size);
         }
     }
 #endif
@@ -523,6 +551,22 @@ void jitc_flush_malloc_cache(bool warn) {
                 for (void *buf : bufs)
                     if (buf)
                         metal_buffer_free(buf);
+                continue;
+            }
+#endif
+
+#if defined(DRJIT_ENABLE_VULKAN)
+            if (jitc_is_vulkan(backend) &&
+                (state.backends & (1u << (uint32_t) JitBackend::Vulkan))) {
+                std::vector<void *> bufs(entries.size());
+                {
+                    lock_guard guard_map(state.lock);
+                    for (size_t i = 0; i < entries.size(); ++i)
+                        bufs[i] = jitc_vulkan_unregister_buffer(entries[i]);
+                }
+                for (void *buf : bufs)
+                    if (buf)
+                        vulkan_buffer_free(buf);
                 continue;
             }
 #endif

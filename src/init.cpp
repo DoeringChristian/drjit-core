@@ -39,6 +39,7 @@
 
 #if defined(DRJIT_ENABLE_VULKAN)
 #  include "vulkan.h"
+#  include "vulkan_ts.h"
 #endif
 
 #if defined(_WIN32)
@@ -159,6 +160,10 @@ void jitc_shutdown(int light) {
             jitc_metal_sync(ts);
         }
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+        if (jitc_is_vulkan(ts->backend))
+            ((VulkanThreadState *) ts->actual_state())->flush(/* wait = */ true);
+#endif
         if (!ts->mask_stack.empty() && state.leak_warnings)
             jitc_log(Warn, "jit_shutdown(): leaked %zu active masks!",
                      ts->mask_stack.size());
@@ -241,6 +246,9 @@ void jitc_shutdown(int light) {
 #endif
 #if defined(DRJIT_ENABLE_METAL)
         tl.ts_metal = nullptr;
+#endif
+#if defined(DRJIT_ENABLE_VULKAN)
+        tl.ts_vulkan = nullptr;
 #endif
 
         for (ThreadState *ts : state.tss) {
@@ -386,6 +394,34 @@ ThreadState *jitc_init_thread_state(JitBackend backend) {
         ts->metal_simd_width  = dev.simd_width;
         ts->metal_max_threads = dev.max_threads_per_threadgroup;
         thread_state_metal = ts;
+
+        ts->backend = backend;
+        ts->scope = jitc_scope_next();
+        state.tss.push_back(ts);
+        return ts;
+    }
+#endif
+
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend)) {
+        if ((state.backends & (1u << (uint32_t) JitBackend::Vulkan)) == 0)
+            jitc_raise(
+                "jit_init_thread_state(): the Vulkan backend has not been "
+                "initialized. Make sure to call jit_init(JitBackend::Vulkan) "
+                "first.");
+
+        if (state.vulkan_devices.empty())
+            jitc_raise("jit_init_thread_state(): the Vulkan backend is "
+                       "inactive because no compatible device was detected.");
+
+        ts = new VulkanThreadState();
+        VulkanDevice &dev = state.vulkan_devices[0];
+        ts->device = 0;
+        ts->vulkan_device   = dev.device;
+        ts->vulkan_queue    = dev.queue;
+        ts->vulkan_pool     = dev.pool;
+        ts->vulkan_timeline = dev.timeline;
+        thread_state_vulkan = ts;
 
         ts->backend = backend;
         ts->scope = jitc_scope_next();
@@ -548,6 +584,12 @@ void jitc_sync_thread(ThreadState *ts) {
         return;
     }
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend)) {
+        jitc_vulkan_sync(ts);
+        return;
+    }
+#endif
     if (jitc_is_llvm(backend)) {
         Task *task = jitc_task;
         if (!task)
@@ -589,6 +631,9 @@ void jitc_sync_thread() {
 #if defined(DRJIT_ENABLE_METAL)
     jitc_sync_thread(tl.ts_metal);
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    jitc_sync_thread(tl.ts_vulkan);
+#endif
 }
 
 void jitc_flush_thread(ThreadState *ts) {
@@ -597,14 +642,22 @@ void jitc_flush_thread(ThreadState *ts) {
         jitc_metal_flush(ts);
         return;
     }
-#else
-    (void) ts;
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (ts && jitc_is_vulkan(ts->backend)) {
+        jitc_vulkan_flush(ts);
+        return;
+    }
+#endif
+    (void) ts;
 }
 
 void jitc_flush_thread() {
 #if defined(DRJIT_ENABLE_METAL)
     jitc_flush_thread(jitc_thread_local().ts_metal);
+#endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    jitc_flush_thread(jitc_thread_local().ts_vulkan);
 #endif
 }
 
@@ -641,8 +694,20 @@ void jitc_sync_all_devices() {
         if (jitc_is_metal(ts->backend))
             continue;
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+        // Only the owning thread may flush a Vulkan thread state
+        if (jitc_is_vulkan(ts->backend))
+            continue;
+#endif
         jitc_sync_thread(ts);
     }
+
+#if defined(DRJIT_ENABLE_VULKAN)
+    jitc_sync_thread(jitc_thread_local().ts_vulkan);
+
+    // Wait for the command buffers that other threads have submitted
+    jitc_vulkan_sync_devices();
+#endif
 
 #if defined(DRJIT_ENABLE_METAL)
     jitc_sync_thread(jitc_thread_local().ts_metal);
