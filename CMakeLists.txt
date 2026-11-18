@@ -210,6 +210,7 @@ add_library(
   src/array.h         src/array.cpp
   src/op.h            src/op.cpp
   src/malloc.h        src/malloc.cpp
+  src/buffer_map.h    src/buffer_map.cpp
   src/registry.h      src/registry.cpp
   src/util.h          src/util.cpp
   src/record_ts.h     src/record_ts.cpp

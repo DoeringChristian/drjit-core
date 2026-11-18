@@ -13,6 +13,7 @@
 #include "metal.h"
 #include "metal_ts.h"
 #include "metal_tex.h"
+#include "buffer_map.h"
 #include "internal.h"
 #include "eval.h"
 #include "malloc.h"
@@ -115,85 +116,19 @@ void metal_buffer_free(void *buffer) {
 }
 
 
-// Lazily-sorted flat vector of (base address, id<MTLBuffer>, length) entries.
-// Protected by ``state.lock``.
-struct BufferEntry {
-    uintptr_t base;
-    void     *buf;    // id<MTLBuffer>
-    size_t    length;
-};
-
-static std::vector<BufferEntry> metal_buffer_map;
-static bool metal_buffer_map_sorted = true;
-
-/// Hash table mapping pointer addresses to id<MTLBuffer>
-static tsl::robin_map<uintptr_t, BufferEntry, UInt64Hasher> metal_buffer_lut;
-
-static void jitc_metal_ensure_sorted() {
-    if (likely(metal_buffer_map_sorted))
-        return;
-    metal_buffer_map.erase(
-        std::remove_if(metal_buffer_map.begin(), metal_buffer_map.end(),
-                       [](const BufferEntry &e) { return e.buf == nullptr; }),
-        metal_buffer_map.end());
-    std::sort(metal_buffer_map.begin(), metal_buffer_map.end(),
-              [](const BufferEntry &a, const BufferEntry &b) {
-                  return a.base < b.base;
-              });
-    metal_buffer_map_sorted = true;
-}
+/// Maps Dr.Jit pointers to the id<MTLBuffer> that contains them
+static BufferMap metal_buffer_map;
 
 void jitc_metal_register_buffer(void *ptr, void *metal_buffer, size_t size) {
-    metal_buffer_map.push_back({ (uintptr_t) ptr, metal_buffer, size });
-    metal_buffer_map_sorted = false;
-    metal_buffer_lut.insert_or_assign(
-        (uintptr_t) ptr, BufferEntry { (uintptr_t) ptr, metal_buffer, size });
+    metal_buffer_map.insert(ptr, metal_buffer, size);
 }
 
-/// Look up a buffer that *contains* the given pointer and return the offset
 void *jitc_metal_find_buffer(void *ptr, size_t *offset_out) {
-    uintptr_t addr = (uintptr_t) ptr;
-
-    // Fast path: the pointer references the start of an allocation
-    auto it_lut = metal_buffer_lut.find(addr);
-    if (likely(it_lut != metal_buffer_lut.end())) {
-        *offset_out = 0;
-        return it_lut->second.buf;
-    }
-
-    jitc_metal_ensure_sorted();
-
-    auto it = std::upper_bound(
-        metal_buffer_map.begin(), metal_buffer_map.end(), addr,
-        [](uintptr_t a, const BufferEntry &b) { return a < b.base; });
-
-    if (it != metal_buffer_map.begin()) {
-        --it;
-        if (it->buf && addr < it->base + it->length) {
-            *offset_out = (size_t) (addr - it->base);
-            return it->buf;
-        }
-    }
-
-    *offset_out = 0;
-    return nullptr;
+    return metal_buffer_map.find(ptr, offset_out);
 }
 
 void *jitc_metal_unregister_buffer(void *ptr) {
-    jitc_metal_ensure_sorted();
-
-    uintptr_t addr = (uintptr_t) ptr;
-    metal_buffer_lut.erase(addr);
-
-    auto it = std::lower_bound(
-        metal_buffer_map.begin(), metal_buffer_map.end(), addr,
-        [](const BufferEntry &e, uintptr_t a) { return e.base < a; });
-    if (it == metal_buffer_map.end() || it->base != addr)
-        return nullptr;
-    void *buf = it->buf;
-    // Turn the entry into a tombstone to postpone cleanup work
-    it->buf = nullptr;
-    return buf;
+    return metal_buffer_map.remove(ptr);
 }
 
 // ============================================================================
@@ -431,7 +366,6 @@ void jitc_metal_shutdown() {
         }
         state.metal_devices.clear();
         metal_buffer_map.clear();
-        metal_buffer_lut.clear();
     }
 }
 
