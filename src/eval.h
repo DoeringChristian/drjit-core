@@ -166,6 +166,18 @@ extern int metal_vft_arg_index;
 extern void jitc_metal_render_prologue();
 #endif
 
+#if defined(DRJIT_ENABLE_VULKAN)
+/// Used by jitc_eval() to generate SPIR-V assembly. Declared here (rather than
+/// in vulkan_eval.h) so that eval.cpp does not pull in that header's codegen
+/// macros. Mirrors the CUDA/LLVM/Metal assemble entry points.
+extern void jitc_vulkan_assemble(ThreadState *ts, ScheduledGroup group,
+                                 uint32_t n_regs, uint32_t n_params);
+
+/// Emit the shared SPIR-V unit prologue (capabilities, entry point, etc.)
+/// into 'buffer'
+extern void jitc_vulkan_render_prologue(ThreadState *ts);
+#endif
+
 #if defined(DRJIT_ENABLE_CUDA)
 /// Emit the shared PTX unit prologue (.version/.target) into 'buffer'
 extern void jitc_cuda_render_prologue(ThreadState *ts);

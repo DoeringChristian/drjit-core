@@ -780,6 +780,9 @@ struct VulkanDevice {
     /// VkCommandPool that command buffers are allocated from
     void *pool;
 
+    /// Number of threads per workgroup of the generated kernels
+    uint32_t block_size;
+
     /// Timeline VkSemaphore signaled by every submission to 'queue', and the
     /// value of the most recent signal operation
     void *timeline;

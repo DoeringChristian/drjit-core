@@ -417,6 +417,8 @@ extern const NameTable<(size_t) VarType::Count> type_name_ptx_bin;
 extern const NameTable<(size_t) VarType::Count> type_name_ptx_bin2;
 extern const NameTable<(size_t) VarType::Count> type_name_metal;
 extern const NameTable<(size_t) VarType::Count> type_name_metal_bin;
+extern const NameTable<(size_t) VarType::Count> type_name_spirv;
+extern const NameTable<(size_t) VarType::Count> type_name_spirv_bin;
 extern const NameTable<(size_t) VarType::Count> type_prefix;
 extern const char *type_size_str        [(int) VarType::Count];
 extern const char type_mangle           [(int) VarType::Count];

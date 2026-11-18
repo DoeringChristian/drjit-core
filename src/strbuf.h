@@ -202,6 +202,14 @@ public:
     void fmt_metal(size_t nargs, size_t fmt_len, const char *fmt, ...);
 #endif
 
+#if defined(DRJIT_ENABLE_VULKAN)
+    /**
+     * \brief Vulkan-specific formatting routine. Its syntax is described at
+     * the top of vulkan_eval.cpp.
+     */
+    void fmt_vulkan(size_t nargs, size_t fmt_len, const char *fmt, ...);
+#endif
+
     /**
      * \brief Append a formatted (printf-style) string to the buffer
      *

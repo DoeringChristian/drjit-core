@@ -16,6 +16,7 @@
 #include "internal.h"
 #include "log.h"
 
+#include <algorithm>
 #include <cstring>
 #include <cstdlib>
 #include <vector>
@@ -250,6 +251,23 @@ void jitc_vulkan_enqueue_callback(int device, void (*callback)(void *),
 //  Backend init / shutdown
 // ============================================================================
 
+/// Choose the number of threads per workgroup of the kernels generated for
+/// ``pdev``. Vulkan provides no occupancy information, hence this is a
+/// heuristic: one subgroup for each of the (typically four) SIMD partitions of
+/// an SM (NVIDIA) or compute unit (AMD).
+static uint32_t jitc_vulkan_block_size(VkPhysicalDevice pdev) {
+    VkPhysicalDeviceVulkan11Properties p11 {};
+    p11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
+
+    VkPhysicalDeviceProperties2 p {};
+    p.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    p.pNext = &p11;
+    vkGetPhysicalDeviceProperties2(pdev, &p);
+
+    return std::min(4 * p11.subgroupSize,
+                    p.properties.limits.maxComputeWorkGroupInvocations);
+}
+
 /// Return the name of the first feature required by Dr.Jit that ``pdev``
 /// lacks, or nullptr if it supports all of them
 static const char *jitc_vulkan_missing_feature(VkPhysicalDevice pdev) {
@@ -346,9 +364,12 @@ bool jitc_vulkan_init() {
         vkGetPhysicalDeviceProperties2(pdev, &props);
         const VkPhysicalDeviceProperties &p = props.properties;
 
-        jitc_log(Info, " - Found Vulkan device %u: \"%s\" (Vulkan %u.%u)", i,
-                 p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
-                 VK_API_VERSION_MINOR(p.apiVersion));
+        uint32_t block_size = jitc_vulkan_block_size(pdev);
+        jitc_log(Info,
+                 " - Found Vulkan device %u: \"%s\" (Vulkan %u.%u, %u "
+                 "threads/workgroup)", i, p.deviceName,
+                 VK_API_VERSION_MAJOR(p.apiVersion),
+                 VK_API_VERSION_MINOR(p.apiVersion), block_size);
 
         if (p.apiVersion < VK_API_VERSION_1_2) {
             jitc_log(Warn, " - Warning: device does *not* support Vulkan 1.2, "
@@ -436,6 +457,7 @@ bool jitc_vulkan_init() {
                                          (VkCommandPool *) &device.pool));
 
         device.timeline = jitc_vulkan_create_timeline(dev);
+        device.block_size = block_size;
 
         size_t len = std::strlen(p.deviceName);
         device.name = (char *) std::malloc(len + 1);

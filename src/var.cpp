@@ -91,6 +91,18 @@ const NameTable<(size_t) VarType::Count> type_name_metal_bin({
     "uint",  "ulong", "ulong", "ulong", "???",   "ushort", "uint",   "uint"
 });
 
+/// SPIR-V type names (Vulkan). Pointers are 64-bit device addresses.
+const NameTable<(size_t) VarType::Count> type_name_spirv({
+    "void", "bool", "???", "i8",  "u8",  "i16", "u16", "i32",
+    "u32",  "i64",  "u64", "u64", "???", "f16", "f32", "f64"
+});
+
+/// SPIR-V binary view (used for bitcasts and bit-wise ops)
+const NameTable<(size_t) VarType::Count> type_name_spirv_bin({
+    "???", "u8",  "???", "u8",  "u8",  "u16", "u16", "u32",
+    "u32", "u64", "u64", "u64", "???", "u16", "u32", "u64"
+});
+
 /// Double size integer arrays for mul_hi()
 const NameTable<(size_t) VarType::Count> type_name_llvm_big({
     "???", "???",  "???", "i16",  "i16", "i32", "i32", "i64",

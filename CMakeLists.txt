@@ -205,7 +205,9 @@ if (DRJIT_ENABLE_VULKAN)
     src/vulkan.h
     src/vulkan_core.cpp
     src/vulkan_ts.h
-    src/vulkan_ts.cpp)
+    src/vulkan_ts.cpp
+    src/vulkan_eval.h
+    src/vulkan_eval.cpp)
 endif()
 
 

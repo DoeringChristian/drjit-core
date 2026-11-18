@@ -374,8 +374,9 @@ void jitc_assemble(ThreadState *ts, ScheduledGroup group) {
 
         // CUDA reserves r0..r3 for the thread-index computation (ctaid/ntid/tid)
         // and compound-op temporaries. Metal receives the thread index directly
-        // via [[thread_position_in_grid]] (r0), so locals can start at r1.
-        n_regs = jitc_is_metal(backend) ? 1 : 4;
+        // via [[thread_position_in_grid]] (r0) and Vulkan via
+        // GlobalInvocationId (r0), so locals can start at r1.
+        n_regs = jitc_is_cuda(backend) ? 4 : 1;
     } else {
         // First 4 parameters reserved for: kernel ptr, size, ITT identifier,
         // callable table. All are bound in LLVMThreadState::launch().
@@ -592,6 +593,10 @@ void jitc_assemble(ThreadState *ts, ScheduledGroup group) {
     if (jitc_is_metal(backend))
         jitc_metal_render_prologue();
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend))
+        jitc_vulkan_render_prologue(ts);
+#endif
     unit_prologue.put(buffer.get(), buffer.size());
     buffer.clear();
     if (jitc_is_llvm(backend))
@@ -607,6 +612,11 @@ void jitc_assemble(ThreadState *ts, ScheduledGroup group) {
 #if defined(DRJIT_ENABLE_METAL)
     if (jitc_is_metal(backend))
         jitc_metal_assemble(ts, group, n_regs, (uint32_t) kernel_params.size());
+    else
+#endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend))
+        jitc_vulkan_assemble(ts, group, n_regs, (uint32_t) kernel_params.size());
     else
 #endif
     if (jitc_is_llvm(backend))
@@ -752,6 +762,11 @@ Task *jitc_run(ThreadState *ts, ScheduledGroup group) {
         if (jitc_is_metal(ts->backend)) {
             ProfilerPhase profiler(profiler_region_backend_compile);
             cache_hit = jitc_metal_kernel_compile(ts, kernel);
+        } else
+#endif
+#if defined(DRJIT_ENABLE_VULKAN)
+        if (jitc_is_vulkan(ts->backend)) {
+            jitc_raise("jit_eval(): not yet supported by the Vulkan backend.");
         } else
 #endif
         if (jitc_is_llvm(ts->backend)) {

@@ -922,3 +922,88 @@ void StringBuffer::fmt_metal(size_t nargs, size_t fmt_len, const char *fmt, ...)
     m_cur = cur;
 }
 #endif
+
+#if defined(DRJIT_ENABLE_VULKAN)
+void StringBuffer::fmt_vulkan(size_t nargs, size_t fmt_len, const char *fmt, ...) {
+    va_list args2;
+    va_start(args2, fmt);
+
+    // Bound the maximum output size needed by the format string and arguments
+    size_t bound = fmt_bound(fmt_len, nargs);
+    if (unlikely(!m_cur || m_cur + bound >= m_end))
+        m_cur = expand(m_cur, bound);
+
+    const char *p = fmt, *fmt_end = fmt + fmt_len;
+    char *cur = m_cur;
+    size_t arg = 0;
+    while (p < fmt_end) {
+        cur = w_run(cur, p, fmt_end);
+        if (p == fmt_end)
+            break;
+        ++p; // consume '$'
+
+        switch (*p++) {
+            case 'u': cur = w_u32(cur, va_arg(args2, uint32_t)); break;
+
+            case 's': {
+                    const char *s = va_arg(args2, const char *);
+                    // Inserting an arbitrary string might break the previous upper bound.
+                    // Re-bound the maximum output size of the remaining fmt string and
+                    // argument count and potentially allocate additional memory.
+                    size_t rest = fmt_bound((size_t) (fmt_end - p), nargs - arg - 1);
+                    size_t len = strlen(s);
+                    if (unlikely(cur + len + rest >= m_end))
+                        cur = expand(cur, len + rest);
+                    cur = w_strn(cur, s, len);
+                }
+                break;
+
+            case 't': {
+                    const Variable *v = va_arg(args2, const Variable *);
+                    cur = w_type(cur, type_name_spirv[v->type]);
+                }
+                break;
+
+            case 'b': {
+                    const Variable *v = va_arg(args2, const Variable *);
+                    cur = w_type(cur, type_name_spirv_bin[v->type]);
+                }
+                break;
+
+            case 'v': {
+                    const Variable *v = va_arg(args2, const Variable *);
+                    *cur++ = 'r';
+                    cur = w_u32(cur, v->reg_index);
+                }
+                break;
+
+            case 'l': {
+                    const Variable *v = va_arg(args2, const Variable *);
+                    *cur++ = '0';
+                    *cur++ = 'x';
+                    cur = w_x64(cur, v->literal);
+                }
+                break;
+
+            default:
+                fprintf(stderr,
+                        "StringBuffer::fmt_vulkan(): encountered unsupported "
+                        "character \"$%c\" in format string!\n", p[-1]);
+                abort();
+        }
+
+        ++arg;
+    }
+    va_end(args2);
+
+    if (unlikely(arg != nargs)) {
+        fprintf(stderr,
+                "StringBuffer::fmt_vulkan(): given %zu args, format string "
+                "accessed %zu (%s)\n", nargs, arg, fmt);
+        abort();
+    }
+
+    *cur = '\0';
+    m_cur = cur;
+}
+#endif
