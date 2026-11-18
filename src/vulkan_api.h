@@ -66,3 +66,6 @@ DR_VULKAN_SYM(PFN_vkDestroySemaphore vkDestroySemaphore);
 DR_VULKAN_SYM(PFN_vkGetSemaphoreCounterValue vkGetSemaphoreCounterValue);
 DR_VULKAN_SYM(PFN_vkWaitSemaphores vkWaitSemaphores);
 DR_VULKAN_SYM(PFN_vkSignalSemaphore vkSignalSemaphore);
+DR_VULKAN_SYM(PFN_vkCmdPipelineBarrier vkCmdPipelineBarrier);
+DR_VULKAN_SYM(PFN_vkCmdCopyBuffer vkCmdCopyBuffer);
+DR_VULKAN_SYM(PFN_vkCmdFillBuffer vkCmdFillBuffer);

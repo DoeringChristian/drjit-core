@@ -114,6 +114,9 @@ bool jitc_vulkan_api_init_instance(VkInstance instance) {
         LOAD(vkGetSemaphoreCounterValue);
         LOAD(vkWaitSemaphores);
         LOAD(vkSignalSemaphore);
+        LOAD(vkCmdPipelineBarrier);
+        LOAD(vkCmdCopyBuffer);
+        LOAD(vkCmdFillBuffer);
 
         #undef LOAD
     } while (false);
@@ -146,6 +149,7 @@ void jitc_vulkan_api_shutdown() {
     Z(vkFreeCommandBuffers); Z(vkBeginCommandBuffer); Z(vkEndCommandBuffer);
     Z(vkQueueSubmit); Z(vkCreateSemaphore); Z(vkDestroySemaphore);
     Z(vkGetSemaphoreCounterValue); Z(vkWaitSemaphores); Z(vkSignalSemaphore);
+    Z(vkCmdPipelineBarrier); Z(vkCmdCopyBuffer); Z(vkCmdFillBuffer);
     #undef Z
 
 #if !defined(_WIN32)

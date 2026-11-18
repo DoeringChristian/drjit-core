@@ -18,7 +18,8 @@ struct VulkanThreadState final : ThreadState {
     ~VulkanThreadState();
 
     // -- Command buffer lifecycle (defined in vulkan_ts.cpp) -----------------
-    /// Return the pending command buffer, opening one on first use
+    /// Return the pending command buffer, opening one on first use. Records a
+    /// barrier that orders the next command after all preceding work.
     void *ensure_cmdbuf();
 
     /// Submit the pending command buffer (if one is open) and, when ``wait`` is
