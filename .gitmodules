@@ -5,3 +5,7 @@
 [submodule "ext/nanothread"]
     path = ext/nanothread
     url = https://github.com/mitsuba-renderer/nanothread
+
+[submodule "ext/vulkan-headers"]
+    path = ext/vulkan-headers
+    url = https://github.com/KhronosGroup/Vulkan-Headers

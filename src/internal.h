@@ -765,6 +765,23 @@ struct MetalDevice {
 };
 #endif
 
+#if defined(DRJIT_ENABLE_VULKAN)
+/// Caches basic information about a Vulkan device
+struct VulkanDevice {
+    /// VkPhysicalDevice and VkDevice handles (opaque pointers to keep Vulkan
+    /// types out of shared headers)
+    void *physical_device;
+    void *device;
+
+    /// VkQueue used to submit compute work, and its queue family index
+    void *queue;
+    uint32_t queue_family;
+
+    /// Cached human-readable device name (owned, freed at shutdown)
+    char *name;
+};
+#endif
+
 /// Represents a single stream of a parallel communication
 struct ThreadStateBase {
     /// Backend type
@@ -1156,6 +1173,11 @@ struct State {
 #if defined(DRJIT_ENABLE_METAL)
     /// Available Metal devices (Apple Silicon only)
     std::vector<MetalDevice> metal_devices;
+#endif
+
+#if defined(DRJIT_ENABLE_VULKAN)
+    /// Available Vulkan devices
+    std::vector<VulkanDevice> vulkan_devices;
 #endif
 
     /// State associated with each DrJit thread

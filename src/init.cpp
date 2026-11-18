@@ -37,6 +37,10 @@
 #  include "metal_ts.h"
 #endif
 
+#if defined(DRJIT_ENABLE_VULKAN)
+#  include "vulkan.h"
+#endif
+
 #if defined(_WIN32)
 #  include <windows.h>
 #  include <direct.h>
@@ -78,6 +82,7 @@ void jitc_init(uint32_t backends) {
 
 #if defined(__APPLE__)
     backends &= ~(1u << (uint32_t) JitBackend::CUDA);
+    backends &= ~(1u << (uint32_t) JitBackend::Vulkan);
 #else
     backends &= ~(1u << (uint32_t) JitBackend::Metal);
 #endif
@@ -105,6 +110,11 @@ void jitc_init(uint32_t backends) {
 #if defined(DRJIT_ENABLE_METAL)
     if ((backends & (1u << (uint32_t) JitBackend::Metal)) && jitc_metal_init())
         state.backends |= 1u << (uint32_t) JitBackend::Metal;
+#endif
+
+#if defined(DRJIT_ENABLE_VULKAN)
+    if ((backends & (1u << (uint32_t) JitBackend::Vulkan)) && jitc_vulkan_init())
+        state.backends |= 1u << (uint32_t) JitBackend::Vulkan;
 #endif
 
     state.variable_counter = 0;
@@ -336,6 +346,9 @@ void jitc_shutdown(int light) {
 #endif
 #if defined(DRJIT_ENABLE_METAL)
         jitc_metal_shutdown();
+#endif
+#if defined(DRJIT_ENABLE_VULKAN)
+        jitc_vulkan_shutdown();
 #endif
     }
 

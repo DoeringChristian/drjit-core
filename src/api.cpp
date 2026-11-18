@@ -107,7 +107,12 @@ int jit_has_backend(JitBackend backend) {
             break;
 
         case JitBackend::Vulkan:
+#if defined(DRJIT_ENABLE_VULKAN)
+            result = (state.backends & (1u << (uint32_t) JitBackend::Vulkan))
+                && !state.vulkan_devices.empty();
+#else
             result = false;
+#endif
             break;
 
         default:

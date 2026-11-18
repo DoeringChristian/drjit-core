@@ -25,6 +25,8 @@ endif()
 
 if (APPLE)
   option(DRJIT_ENABLE_METAL "Enable the Apple Metal backend?" ON)
+else()
+  option(DRJIT_ENABLE_VULKAN "Enable the Vulkan backend?" OFF)
 endif()
 
 if (NOT MSVC)
@@ -77,6 +79,12 @@ if (DRJIT_ENABLE_METAL)
   message(STATUS "Dr.Jit-Core: Metal GPU backend enabled.")
 else()
   message(STATUS "Dr.Jit-Core: Metal GPU backend disabled.")
+endif()
+
+if (DRJIT_ENABLE_VULKAN)
+  message(STATUS "Dr.Jit-Core: Vulkan GPU backend enabled.")
+else()
+  message(STATUS "Dr.Jit-Core: Vulkan GPU backend disabled.")
 endif()
 
 # ----------------------------------------------------------
@@ -190,6 +198,14 @@ if (DRJIT_ENABLE_METAL)
     src/metal_coop_vec.cpp)
 endif()
 
+if (DRJIT_ENABLE_VULKAN)
+  set(DRJIT_VULKAN_FILES
+    src/vulkan_api.h
+    src/vulkan_api.cpp
+    src/vulkan.h
+    src/vulkan_core.cpp)
+endif()
+
 
 add_library(
   drjit-core SHARED
@@ -225,6 +241,9 @@ add_library(
 
   # Metal backend, if enabled
   ${DRJIT_METAL_FILES}
+
+  # Vulkan backend, if enabled
+  ${DRJIT_VULKAN_FILES}
 
   # LLVM backend
   src/llvm_api.h
@@ -400,6 +419,12 @@ if (DRJIT_ENABLE_METAL)
     src/metal_ts.mm
     src/metal_tex.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+endif()
+
+if (DRJIT_ENABLE_VULKAN)
+  target_compile_definitions(drjit-core PRIVATE -DDRJIT_ENABLE_VULKAN=1)
+  target_include_directories(drjit-core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/ext/vulkan-headers/include)
 endif()
 
 if (UNIX)
