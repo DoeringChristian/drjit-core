@@ -292,10 +292,10 @@ struct alignas(64) Variable {
     uint32_t kind : 7;
 
     /// Backend associated with this variable
-    uint32_t backend : 2;
+    uint32_t backend : 3;
 
     /// Variable type (Bool/Int/Float/....)
-    uint32_t type : 5;
+    uint32_t type : 4;
 
     /// Is this a pointer variable that tracks a pending write? It holds a side
     /// effect reference that keeps the target marked dirty until it expires.
@@ -390,6 +390,10 @@ struct alignas(64) Variable {
 };
 
 static_assert(sizeof(Variable) == 64);
+static_assert((uint32_t) JitBackend::Count <= 8,
+              "Variable::backend must fit into 3 bits");
+static_assert((uint32_t) VarType::Count <= 16,
+              "Variable::type must fit into 4 bits");
 
 /// This record represents additional information that can *optionally* be
 /// associated with a 'Variable' instance. These are factored out into a struct
@@ -447,7 +451,7 @@ struct VariableKey {
         memcpy((void *) this, (const void *) &v.scope, 32);
         uint32_t array_length =
             (v.is_array() || v.coop_vec) ? (uint32_t) v.array_length : 0u;
-        // The bitfields kind:7|backend:2|type:5|write_ptr:1|written:1 occupy
+        // The bitfields kind:7|backend:3|type:4|write_ptr:1|written:1 occupy
         // bits 0..15 of the 32-bit word immediately after 'scratch' (LSB-first
         // packing), which is exactly the layout 'packed' wants. Reading the raw
         // word and masking avoids extracting and re-assembling each field
@@ -1354,13 +1358,21 @@ template <typename T> inline bool jitc_is_metal(T b) {
 #endif
 }
 
+template <typename T> inline bool jitc_is_vulkan(T b) {
+#if defined(DRJIT_ENABLE_VULKAN)
+    return (JitBackend) b == JitBackend::Vulkan;
+#else
+    (void) b; return false;
+#endif
+}
+
 template <typename T> inline bool jitc_is_llvm(T b) {
     return (JitBackend) b == JitBackend::LLVM;
 }
 
-/// Returns true if the given backend uses GPU device memory (CUDA or Metal)
+/// Returns true if the given backend uses GPU device memory (CUDA, Metal, or Vulkan)
 template <typename T> inline bool jitc_is_gpu(T b) {
-    return jitc_is_cuda(b) || jitc_is_metal(b);
+    return jitc_is_cuda(b) || jitc_is_metal(b) || jitc_is_vulkan(b);
 }
 
 /// Search for a shared library and dlopen it if possible

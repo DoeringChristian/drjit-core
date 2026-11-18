@@ -106,6 +106,10 @@ int jit_has_backend(JitBackend backend) {
 #endif
             break;
 
+        case JitBackend::Vulkan:
+            result = false;
+            break;
+
         default:
             jitc_raise("jit_has_backend(): invalid input!");
     }

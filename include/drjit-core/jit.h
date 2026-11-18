@@ -56,23 +56,28 @@ enum class JitBackend : uint32_t {
     /// Metal backend (Apple Silicon GPUs, generates MSL source)
     Metal = 3,
 
+    /// Vulkan backend (generates SPIR-V)
+    Vulkan = 4,
+
     /// Sentinel value (not a real backend; equals the number of backends)
-    Count = 4
+    Count = 5
 };
 
 /// Compile-time name of a JIT backend (e.g., to identify registry domains)
 template <JitBackend Backend>
 constexpr const char *jit_backend_name_v =
-    Backend == JitBackend::CUDA  ? "cuda"  :
-    Backend == JitBackend::LLVM  ? "llvm"  :
-    Backend == JitBackend::Metal ? "metal" : "none";
+    Backend == JitBackend::CUDA   ? "cuda"   :
+    Backend == JitBackend::LLVM   ? "llvm"   :
+    Backend == JitBackend::Metal  ? "metal"  :
+    Backend == JitBackend::Vulkan ? "vulkan" : "none";
 #else
 enum JitBackend {
     JitBackendNone = 0,
     JitBackendCUDA = 1,
     JitBackendLLVM = 2,
     JitBackendMetal = 3,
-    JitBackendCount = 4
+    JitBackendVulkan = 4,
+    JitBackendCount = 5
 };
 #endif
 
