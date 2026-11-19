@@ -152,6 +152,8 @@ const char *backend_name(JitBackend backend) {
             return "LLVM";
         case JitBackend::Metal:
             return "Metal";
+        case JitBackend::Vulkan:
+            return "Vulkan";
         case JitBackend::None:
             return "None";
         default:
