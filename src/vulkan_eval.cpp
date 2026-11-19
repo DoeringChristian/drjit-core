@@ -35,6 +35,8 @@
 #include "vulkan_eval.h"
 #include "vulkan_scatter.h"
 #include "vulkan_packet.h"
+#include "vulkan_array.h"
+#include "array.h"
 #include "vulkan.h"
 #include "loop.h"
 #include "cond.h"
@@ -266,9 +268,13 @@ void jitc_vulkan_assemble(ThreadState *ts, ScheduledGroup group,
 
     // The number of workgroups is limited by the device, hence threads
     // process the elements in a grid-stride loop
-    fmt("%main = OpFunction %void None %fn_void\n"
-        "%entry = OpLabel\n"
-        "%gid_v = OpLoad %v3u32 %gid\n"
+    put("%main = OpFunction %void None %fn_void\n"
+        "%entry = OpLabel\n");
+
+    // Local arrays are declared here (see jitc_vulkan_render_array_alloc())
+    jitc_vulkan_locals_target = buffer.size();
+
+    fmt("%gid_v = OpLoad %v3u32 %gid\n"
         "%r0_start = OpCompositeExtract %u32 %gid_v 0\n"
         "%nwg_v = OpLoad %v3u32 %nwg\n"
         "%nwg_x = OpCompositeExtract %u32 %nwg_v 0\n"
@@ -306,8 +312,12 @@ void jitc_vulkan_assemble(ThreadState *ts, ScheduledGroup group,
             }
 
             jitc_vulkan_render_param(v);
-            jitc_vulkan_render_param_ptr(v);
-            jitc_vulkan_render_load(v, "e", "");
+            if (v->is_array()) {
+                jitc_vulkan_render_array_memcpy_in(v);
+            } else {
+                jitc_vulkan_render_param_ptr(v);
+                jitc_vulkan_render_load(v, "e", "");
+            }
             continue;
         }
 
@@ -315,8 +325,12 @@ void jitc_vulkan_assemble(ThreadState *ts, ScheduledGroup group,
 
         if (ptype == ParamType::Output) {
             jitc_vulkan_render_param(v);
-            jitc_vulkan_render_param_ptr(v);
-            jitc_vulkan_render_store(v, "e", v);
+            if (v->is_array()) {
+                jitc_vulkan_render_array_memcpy_out(v);
+            } else {
+                jitc_vulkan_render_param_ptr(v);
+                jitc_vulkan_render_store(v, "e", v);
+            }
         }
     }
 
@@ -986,10 +1000,11 @@ static void jitc_vulkan_render(Variable *v) {
                 Variable *inner_in  = jitc_var(ld->inner_in[i]),
                          *outer_in  = jitc_var(ld->outer_in[i]),
                          *inner_out = jitc_var(ld->inner_out[i]);
-                if (inner_in == outer_in || !inner_in->reg_index)
-                    continue; // ignore eliminated/unused loop state variables
-                if (inner_in->is_array())
-                    jitc_vulkan_render_unhandled(inner_in);
+                // Ignore eliminated/unused loop state variables. Arrays are
+                // modified in place and need no phi nodes.
+                if (inner_in == outer_in || !inner_in->reg_index ||
+                    inner_in->is_array())
+                    continue;
                 fmt("%$v = OpPhi %$t", inner_in, inner_in);
                 jitc_vulkan_render_operand(outer_in, inner_in);
                 fmt(" %$v_lp", v);
@@ -1019,9 +1034,9 @@ static void jitc_vulkan_render(Variable *v) {
             break;
 
         case VarKind::LoopPhi:
-            // The phi node is emitted by LoopStart
+            // The phi node is emitted by LoopStart, arrays share the storage
             if (v->is_array())
-                jitc_vulkan_render_unhandled(v);
+                v->reg_index = jitc_var(v->dep[3])->reg_index;
             break;
 
         // The header block dominates the loop exit, hence the phi node holds
@@ -1031,9 +1046,14 @@ static void jitc_vulkan_render(Variable *v) {
             for (size_t i = 0; i < ld->size; ++i) {
                 if (jitc_var(ld->outer_out[i]) != v)
                     continue;
-                fmt("%$v = OpCopyObject %$t", v, v);
-                jitc_vulkan_render_operand(jitc_var(ld->inner_in[i]), v);
-                put('\n');
+                Variable *inner_in = jitc_var(ld->inner_in[i]);
+                if (v->is_array()) {
+                    v->reg_index = inner_in->reg_index;
+                } else {
+                    fmt("%$v = OpCopyObject %$t", v, v);
+                    jitc_vulkan_render_operand(inner_in, v);
+                    put('\n');
+                }
                 break;
             }
             break;
@@ -1082,6 +1102,32 @@ static void jitc_vulkan_render(Variable *v) {
         }
 
         case VarKind::CondOutput: // The phi node is emitted by CondEnd
+            break;
+
+        // -- Local arrays --
+        case VarKind::Array:
+            jitc_vulkan_render_array(v, v->dep[0] ? a0 : nullptr);
+            break;
+
+        case VarKind::ArrayInit:
+            jitc_vulkan_render_array_init(v, a0, a1);
+            break;
+
+        case VarKind::ArrayWrite:
+            jitc_vulkan_render_array_write(v, a0, a1, a2,
+                                           v->dep[3] ? jitc_var(v->dep[3]) : nullptr);
+            break;
+
+        case VarKind::ArrayRead:
+            jitc_vulkan_render_array_read(v, a0, a1, a2);
+            break;
+
+        case VarKind::ArrayPhi:
+            v->reg_index = a0->reg_index;
+            break;
+
+        case VarKind::ArraySelect:
+            jitc_vulkan_render_array_select(v, a0, a1, a2);
             break;
 
         default:
