@@ -81,4 +81,7 @@ extern void *jitc_vulkan_find_buffer(void *ptr, size_t *offset_out);
 /// Unregister a previously registered buffer
 extern void *jitc_vulkan_unregister_buffer(void *ptr);
 
+/// Return the device address of a pointer into a device or shared allocation
+extern uint64_t jitc_vulkan_device_address(void *ptr);
+
 #endif // defined(DRJIT_ENABLE_VULKAN)

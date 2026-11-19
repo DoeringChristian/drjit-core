@@ -767,6 +767,13 @@ struct MetalDevice {
 
 #if defined(DRJIT_ENABLE_VULKAN)
 /// Caches basic information about a Vulkan device
+/// Enumeration of the precompiled utility kernels in vulkan_kernels.comp. The
+/// order must match ``vulkan_kernel_names`` in vulkan_core.cpp.
+enum class VulkanKernel : uint32_t {
+    Aggregate,
+    Count
+};
+
 struct VulkanDevice {
     /// VkPhysicalDevice and VkDevice handles (opaque pointers to keep Vulkan
     /// types out of shared headers)
@@ -780,9 +787,14 @@ struct VulkanDevice {
     /// VkCommandPool that command buffers are allocated from
     void *pool;
 
-    /// VkPipelineLayout shared by all kernels (a push constant holding the
-    /// address of the kernel parameter array)
+    /// VkPipelineLayout shared by all kernels. Its push constants hold the
+    /// address of the kernel parameter array, or the parameters of a utility
+    /// kernel.
     void *layout;
+
+    /// VkShaderModule of the utility kernels, and their VkPipelines
+    void *utility_module;
+    void *pipelines[(uint32_t) VulkanKernel::Count];
 
     /// Maximum number of workgroups of a dispatch
     uint32_t max_group_count;

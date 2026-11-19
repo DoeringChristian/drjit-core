@@ -307,6 +307,45 @@ void VulkanThreadState::poke(void *dst, const void *src, uint32_t size) {
 }
 
 // ============================================================================
+//  Utility kernels (see resources/vulkan_kernels.comp)
+// ============================================================================
+
+/// Dispatch the utility kernel ``kernel`` with the push constants ``params``
+/// over ``size`` elements
+static void jitc_vulkan_launch_utility(VulkanThreadState *ts,
+                                       VulkanKernel kernel, const void *params,
+                                       uint32_t params_size, uint32_t size) {
+    const VulkanDevice &dev = state.vulkan_devices[ts->device];
+    uint32_t groups = std::min((size + dev.block_size - 1) / dev.block_size,
+                               dev.max_group_count);
+
+    VkCommandBuffer cb = (VkCommandBuffer) ts->ensure_cmdbuf();
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      (VkPipeline) dev.pipelines[(uint32_t) kernel]);
+    vkCmdPushConstants(cb, (VkPipelineLayout) dev.layout,
+                       VK_SHADER_STAGE_COMPUTE_BIT, 0, params_size, params);
+    vkCmdDispatch(cb, groups, 1, 1);
+}
+
+void VulkanThreadState::aggregate(void *dst, AggregationEntry *agg,
+                                  uint32_t size) {
+    if (size == 0)
+        return;
+
+    jitc_log(InfoSym, "jit_aggregate(" DRJIT_PTR " -> " DRJIT_PTR
+             ", size=%u)", (uintptr_t) agg, (uintptr_t) dst, size);
+
+    // The caller allocates ``agg`` in shared memory, which the kernel reads
+    // in place
+    struct { uint64_t dst, agg; uint32_t size; } params {
+        (uint64_t) (uintptr_t) dst, jitc_vulkan_device_address(agg), size
+    };
+
+    jitc_vulkan_launch_utility(this, VulkanKernel::Aggregate, &params,
+                               sizeof(params), size);
+}
+
+// ============================================================================
 //  Operations that are not yet supported
 // ============================================================================
 
@@ -340,10 +379,6 @@ uint32_t VulkanThreadState::compress(const uint8_t *, uint32_t, uint32_t *) {
 uint32_t VulkanThreadState::block_mkperm(const uint32_t *, uint32_t, uint32_t,
                                          uint32_t, uint32_t *, uint32_t *) {
     jitc_raise("jit_block_mkperm(): not yet supported by the Vulkan backend.");
-}
-
-void VulkanThreadState::aggregate(void *, AggregationEntry *, uint32_t) {
-    jitc_raise("jit_aggregate(): not yet supported by the Vulkan backend.");
 }
 
 void VulkanThreadState::coop_vec_pack(uint32_t, const void *,

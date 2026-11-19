@@ -1338,7 +1338,10 @@ XXH128_hash_t jitc_assemble_func(const CallData *call, uint32_t inst,
     // A callable with one target becomes part of the same compilation unit,
     // while true indirection involves separate compilation. Intersection
     // functions are always separate: the backend calls them by address.
-    bool indirect = call->n_inst != 1 || call->isect;
+    // SPIR-V functions cannot be part of the preamble (which declares the
+    // types and constants), hence Vulkan callables are always separate.
+    bool indirect = call->n_inst != 1 || call->isect ||
+                    jitc_is_vulkan(call->backend);
     UnitBuilder *unit = indirect ? jitc_unit_push() : nullptr;
 
     size_t kernel_offset = buffer.size();
@@ -1368,6 +1371,15 @@ XXH128_hash_t jitc_assemble_func(const CallData *call, uint32_t inst,
             else
                 jitc_metal_assemble_func(call, inst, in_size, in_align,
                                          out_size, out_align, n_regs);
+            break;
+#endif
+
+#if defined(DRJIT_ENABLE_VULKAN)
+        case JitBackend::Vulkan:
+            if (call->isect)
+                jitc_raise("jitc_assemble_func(): intersection functions are "
+                           "not yet supported by the Vulkan backend.");
+            jitc_vulkan_assemble_func(call, inst);
             break;
 #endif
 

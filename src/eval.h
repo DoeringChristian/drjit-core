@@ -176,6 +176,9 @@ extern void jitc_vulkan_assemble(ThreadState *ts, ScheduledGroup group,
 /// Emit the shared SPIR-V unit prologue (capabilities, entry point, etc.)
 /// into 'buffer'
 extern void jitc_vulkan_render_prologue(ThreadState *ts);
+
+/// Used by jitc_call() to generate SPIR-V assembly for callables
+extern void jitc_vulkan_assemble_func(const CallData *call, uint32_t inst);
 #endif
 
 #if defined(DRJIT_ENABLE_CUDA)

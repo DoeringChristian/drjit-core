@@ -201,9 +201,22 @@ static void pack_metal(void) {
     close_header(f);
 }
 
+/// Compress the precompiled Vulkan utility kernel module
+static void pack_vulkan(void) {
+    FILE *f = open_header("vulkan_kernels.h");
+
+    size_t size;
+    char *data = read_file("vulkan_kernels.spv", &size);
+    pack_buffer(f, "vulkan_kernels", data, size, "vulkan_kernels.lz4");
+    free(data);
+    close_header(f);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "metal") == 0)
         pack_metal();
+    else if (argc > 1 && strcmp(argv[1], "vulkan") == 0)
+        pack_vulkan();
     else
         pack_ptx();
 

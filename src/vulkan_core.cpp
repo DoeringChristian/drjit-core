@@ -18,12 +18,14 @@
 #include "unit.h"
 #include "io.h"
 #include "log.h"
+#include "resources/vulkan_kernels.h"
 
 #include <algorithm>
 #include <cstring>
 #include <cstdlib>
 #include <vector>
 #include <thread>
+#include <string_view>
 
 static VkInstance jitc_vulkan_instance = nullptr;
 
@@ -144,6 +146,67 @@ void *jitc_vulkan_find_buffer(void *ptr, size_t *offset_out) {
 
 void *jitc_vulkan_unregister_buffer(void *ptr) {
     return vulkan_buffer_map.remove(ptr);
+}
+
+uint64_t jitc_vulkan_device_address(void *ptr) {
+    size_t offset = 0;
+    VulkanBuffer *buf = (VulkanBuffer *) vulkan_buffer_map.find(ptr, &offset);
+    if (unlikely(!buf))
+        jitc_fail("jitc_vulkan_device_address(): " DRJIT_PTR " is not a "
+                  "Vulkan allocation!", (uintptr_t) ptr);
+
+    VkBufferDeviceAddressInfo address_info {};
+    address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    address_info.buffer = (VkBuffer) buf->buffer;
+    return vkGetBufferDeviceAddress((VkDevice) buf->device, &address_info) +
+           offset;
+}
+
+// ============================================================================
+//  Utility kernels
+// ============================================================================
+
+/// Entry point names, indexed by VulkanKernel. The order must match the
+/// VulkanKernel enum in internal.h.
+static const char *vulkan_kernel_names[(uint32_t) VulkanKernel::Count] = {
+    "aggregate"
+};
+
+/// Create the pipelines of the utility kernels in the module ``spirv``. Their
+/// workgroup size (specialization constant 0) is that of the generated kernels.
+static void jitc_vulkan_create_utility_pipelines(VulkanDevice &device,
+                                                 const char *spirv,
+                                                 size_t size) {
+    VkDevice dev = (VkDevice) device.device;
+
+    VkShaderModuleCreateInfo module_info {};
+    module_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    module_info.codeSize = size;
+    module_info.pCode = (const uint32_t *) spirv;
+    vulkan_check(vkCreateShaderModule(
+        dev, &module_info, nullptr, (VkShaderModule *) &device.utility_module));
+
+    VkSpecializationMapEntry entry { 0, 0, sizeof(uint32_t) };
+    VkSpecializationInfo spec {};
+    spec.mapEntryCount = 1;
+    spec.pMapEntries = &entry;
+    spec.dataSize = sizeof(uint32_t);
+    spec.pData = &device.block_size;
+
+    for (uint32_t i = 0; i < (uint32_t) VulkanKernel::Count; ++i) {
+        VkComputePipelineCreateInfo pipeline_info {};
+        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.stage.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        pipeline_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pipeline_info.stage.module = (VkShaderModule) device.utility_module;
+        pipeline_info.stage.pName = vulkan_kernel_names[i];
+        pipeline_info.stage.pSpecializationInfo = &spec;
+        pipeline_info.layout = (VkPipelineLayout) device.layout;
+        vulkan_check(vkCreateComputePipelines(
+            dev, VK_NULL_HANDLE, 1, &pipeline_info, nullptr,
+            (VkPipeline *) &device.pipelines[i]));
+    }
 }
 
 // ============================================================================
@@ -277,25 +340,113 @@ static XXH128_hash_t jitc_vulkan_disk_key(const VulkanDevice &dev,
     return XXH3_128bits_digest(&xs);
 }
 
-bool jitc_vulkan_kernel_compile(ThreadState *ts, Kernel &kernel) {
-    if (!callable_units.empty())
-        jitc_raise("jit_eval(): calls are not yet supported by the Vulkan "
-                   "backend.");
+/// Append the body of ``unit`` to ``out`` and replace the placeholders
+/// '@<hash>' of call dispatches by callable indices. A non-null ``prefix`` is
+/// prepended to the IDs defined in the body.
+static void jitc_vulkan_link_body(StringBuffer &out, const UnitBuilder *unit,
+                                  const char *prefix) {
+    const char *start = unit->src.get() + unit->body_offset,
+               *end = unit->src.get() + unit->src.size();
+    auto is_id_char = [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+               (c >= '0' && c <= '9') || c == '_';
+    };
 
+    // IDs defined by the body: '%<name> = ...' (except for function names)
+    tsl::robin_set<std::string_view> defined;
+    if (prefix) {
+        for (const char *p = start; p < end; ) {
+            const char *eol = (const char *) memchr(p, '\n', end - p);
+            if (!eol)
+                eol = end;
+            if (*p == '%' && strncmp(p + 1, "func_", 5) != 0) {
+                const char *q = p + 1;
+                while (q < eol && is_id_char(*q))
+                    q++;
+                if (strncmp(q, " = ", 3) == 0)
+                    defined.insert(std::string_view(p + 1, q - p - 1));
+            }
+            p = eol + 1;
+        }
+    }
+
+    for (const char *p = start; p < end; ) {
+        if (*p == '%' && prefix) {
+            const char *q = p + 1;
+            while (q < end && is_id_char(*q))
+                q++;
+            out.put('%');
+            if (defined.count(std::string_view(p + 1, q - p - 1)))
+                out.put(prefix, strlen(prefix));
+            out.put(p + 1, q - p - 1);
+            p = q;
+        } else if (*p == '@') {
+            char tmp[17] = { };
+            XXH128_hash_t hash;
+            memcpy(tmp, p + 1, 16);
+            hash.high64 = strtoull(tmp, nullptr, 16);
+            memcpy(tmp, p + 17, 16);
+            hash.low64 = strtoull(tmp, nullptr, 16);
+            out.put_u32(jitc_unit_callable_index(hash));
+            p += 33;
+        } else {
+            out.put(*p++);
+        }
+    }
+}
+
+/// Combine the units of a kernel into a single SPIR-V module, the counterpart
+/// of the link step of the other backends. The module consists of the
+/// prologue, the declarations of all units (without duplicates), and the
+/// functions. IDs are global in a SPIR-V module, hence those defined by
+/// callable 'k' are renamed to '%f<k>_<name>'.
+static void jitc_vulkan_link(StringBuffer &out) {
+    out.clear();
+    out.put(unit_entry->src.get(), unit_entry->body_offset);
+
+    tsl::robin_set<XXH128_hash_t, XXH128Hasher, XXH128Eq> declared =
+        unit_entry->registered;
+    for (const CallableUnit &cu : callable_units) {
+        const char *p = cu.unit->src.get() + unit_prologue.size(),
+                   *end = cu.unit->src.get() + cu.unit->body_offset;
+        while (p < end) {
+            const char *eol = (const char *) memchr(p, '\n', end - p);
+            if (declared.insert(XXH128(p, eol - p, 0)).second)
+                out.put(p, eol - p + 1);
+            p = eol + 1;
+        }
+    }
+
+    jitc_vulkan_link_body(out, unit_entry, nullptr);
+    for (size_t k = 0; k < callable_units.size(); ++k) {
+        char prefix[32];
+        snprintf(prefix, sizeof(prefix), "f%zu_", k);
+        jitc_vulkan_link_body(out, callable_units[k].unit, prefix);
+    }
+}
+
+/// Source of the module combining the units of the kernel being compiled
+static StringBuffer jitc_vulkan_module_src { 1024 };
+
+bool jitc_vulkan_kernel_compile(ThreadState *ts, Kernel &kernel) {
     const VulkanDevice &dev = state.vulkan_devices[ts->device];
     VkDevice device = (VkDevice) dev.device;
 
     UnitCompileJob job;
     jitc_unit_job_init(0, job);
+    jitc_vulkan_link(jitc_vulkan_module_src);
+    job.source = jitc_vulkan_module_src.get();
+    job.source_size = jitc_vulkan_module_src.size();
 
     UnitArtifact artifact;
-    bool hit = jitc_unit_cache_lookup(JitBackend::Vulkan, job.unit_hash,
+    // The module is identified by the kernel hash, which also covers the
+    // callables
+    bool hit = jitc_unit_cache_lookup(JitBackend::Vulkan, kernel_hash,
                                       (uint64_t) ts->device, artifact);
     VkShaderModule module = hit ? (VkShaderModule) artifact.ptr[0]
                                 : VK_NULL_HANDLE;
 
-    XXH128_hash_t module_key = jitc_vulkan_disk_key(dev, job.unit_hash),
-                  pipeline_key = jitc_vulkan_disk_key(dev, kernel_hash);
+    XXH128_hash_t key = jitc_vulkan_disk_key(dev, kernel_hash);
 
     VkPipeline pipeline = VK_NULL_HANDLE;
     bool module_from_disk = false, pipeline_from_disk = false;
@@ -309,7 +460,7 @@ bool jitc_vulkan_kernel_compile(ThreadState *ts, Kernel &kernel) {
             // SPIR-V binary from the disk cache, or from the assembler
             std::vector<uint8_t> spirv;
             module_from_disk = jitc_cache_blob_load(CacheKind::VulkanModule,
-                                                    module_key, spirv);
+                                                    key, spirv);
             if (!module_from_disk) {
                 spv_binary binary = nullptr;
                 spv_diagnostic diagnostic = nullptr;
@@ -330,7 +481,7 @@ bool jitc_vulkan_kernel_compile(ThreadState *ts, Kernel &kernel) {
 
                 if (jitc_cache_writable())
                     jitc_cache_blob_store_async(CacheKind::VulkanModule,
-                                                module_key,
+                                                key,
                                                 std::vector<uint8_t>(spirv));
             }
 
@@ -361,7 +512,7 @@ bool jitc_vulkan_kernel_compile(ThreadState *ts, Kernel &kernel) {
         // The pipeline cache persists the machine code produced by the driver
         std::vector<uint8_t> cache_data;
         pipeline_from_disk = jitc_cache_blob_load(CacheKind::VulkanPipeline,
-                                                  pipeline_key, cache_data);
+                                                  key, cache_data);
 
         VkPipelineCacheCreateInfo cache_info {};
         cache_info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
@@ -389,7 +540,7 @@ bool jitc_vulkan_kernel_compile(ThreadState *ts, Kernel &kernel) {
             vulkan_check(
                 vkGetPipelineCacheData(device, cache, &size, data.data()));
             jitc_cache_blob_store_async(CacheKind::VulkanPipeline,
-                                        pipeline_key, std::move(data));
+                                        key, std::move(data));
         }
 
         vkDestroyPipelineCache(device, cache, nullptr);
@@ -398,7 +549,7 @@ bool jitc_vulkan_kernel_compile(ThreadState *ts, Kernel &kernel) {
     // Publish the new artifacts; the cache pins the shader module
     if (!hit) {
         UnitArtifact a { { (void *) module, (void *) device }, 0, 0 };
-        jitc_unit_cache_insert(JitBackend::Vulkan, job.unit_hash,
+        jitc_unit_cache_insert(JitBackend::Vulkan, kernel_hash,
                                (uint64_t) ts->device, a,
                                jitc_vulkan_unit_release);
     }
@@ -667,9 +818,10 @@ bool jitc_vulkan_init() {
 
         device.timeline = jitc_vulkan_create_timeline(dev);
 
+        // The minimum size of push constants that every device supports
         VkPushConstantRange push_range {};
         push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        push_range.size = sizeof(uint64_t);
+        push_range.size = 128;
 
         VkPipelineLayoutCreateInfo layout_info {};
         layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -682,6 +834,14 @@ bool jitc_vulkan_init() {
         device.block_size = block_size;
         device.atomic_float32_add = atomic_float.shaderBufferFloat32AtomicAdd;
         device.atomic_float64_add = atomic_float.shaderBufferFloat64AtomicAdd;
+
+        char *spirv = jitc_lz4_inflate(vulkan_kernels,
+                                       vulkan_kernels_size_compressed,
+                                       vulkan_kernels_size_uncompressed,
+                                       "utility kernel module");
+        jitc_vulkan_create_utility_pipelines(device, spirv,
+                                             vulkan_kernels_size_uncompressed);
+        free(spirv);
 
         size_t len = std::strlen(p.deviceName);
         device.name = (char *) std::malloc(len + 1);
@@ -766,6 +926,11 @@ void jitc_vulkan_shutdown() {
                            nullptr);
         vkDestroyCommandPool((VkDevice) dev.device, (VkCommandPool) dev.pool,
                              nullptr);
+        for (uint32_t i = 0; i < (uint32_t) VulkanKernel::Count; ++i)
+            vkDestroyPipeline((VkDevice) dev.device,
+                              (VkPipeline) dev.pipelines[i], nullptr);
+        vkDestroyShaderModule((VkDevice) dev.device,
+                              (VkShaderModule) dev.utility_module, nullptr);
         vkDestroyPipelineLayout((VkDevice) dev.device,
                                 (VkPipelineLayout) dev.layout, nullptr);
         vkDestroyDevice((VkDevice) dev.device, nullptr);

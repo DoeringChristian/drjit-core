@@ -42,5 +42,24 @@ metal_kernels.metallib: metal_kernels.metal
 metal_kernels.lz4: pack metal_kernels.metallib
 	./pack metal
 
+# Precompiled Vulkan kernels shipped with Dr.Jit-core. Requires glslang and the
+# SPIRV-Tools command line tools. Each kernel is compiled separately (see
+# vulkan_kernels.comp), and the modules are linked into one.
+VULKAN_KERNELS=aggregate
+GLSLANG=glslangValidator -V --target-env vulkan1.2
+
+vulkan: vulkan_kernels.lz4
+
+vulkan_kernels.spv: vulkan_kernels.comp
+	for k in $(VULKAN_KERNELS); do \
+	    $(GLSLANG) -D$$(echo $$k | tr a-z A-Z) -e $$k --source-entrypoint main \
+	        vulkan_kernels.comp -o $$k.spv || exit 1; \
+	done
+	spirv-link --target-env vulkan1.2 $(VULKAN_KERNELS:=.spv) -o vulkan_kernels.spv
+	rm -f $(VULKAN_KERNELS:=.spv)
+
+vulkan_kernels.lz4: pack vulkan_kernels.spv
+	./pack vulkan
+
 clean:
-	rm -f kernels_75.ptx kernels.bin metal_kernels.air metal_kernels.metallib
+	rm -f kernels_75.ptx kernels.bin metal_kernels.air metal_kernels.metallib vulkan_kernels.spv

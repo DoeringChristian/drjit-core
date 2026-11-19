@@ -435,6 +435,16 @@ if (DRJIT_ENABLE_VULKAN)
   target_compile_definitions(drjit-core PRIVATE -DDRJIT_ENABLE_VULKAN=1)
   target_include_directories(drjit-core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/ext/vulkan-headers/include)
+  # Precompiled (and compressed) Vulkan utility kernels
+  drjit_embed_binary(
+    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/resources/vulkan_kernels.c
+    SYMBOLS vulkan_kernels
+    INPUTS  ${CMAKE_CURRENT_SOURCE_DIR}/resources/vulkan_kernels.lz4
+    TYPE    char
+    HEADER  resources/vulkan_kernels.h)
+  target_sources(drjit-core PRIVATE
+    resources/vulkan_kernels.h
+    "${CMAKE_CURRENT_BINARY_DIR}/resources/vulkan_kernels.c")
 endif()
 
 if (UNIX)

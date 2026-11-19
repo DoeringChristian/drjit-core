@@ -79,6 +79,7 @@ static void jitc_unit_finish(UnitBuilder *unit, const char *body,
     // initial preamble append, or this point for units without a preamble
     if (src.size() == 0)
         src.put(unit_prologue.get(), unit_prologue.size());
+    unit->body_offset = src.size();
     src.put(body, body_size);
     src.put(unit_epilogue.get(), unit_epilogue.size());
     unit->unit_hash = XXH128(src.get(), src.size(), 0);

@@ -37,9 +37,13 @@ struct UnitBuilder {
     /// Content hash of ``src``
     XXH128_hash_t unit_hash { 0, 0 };
 
+    /// Offset of the body in ``src`` (following the prologue and preamble)
+    size_t body_offset = 0;
+
     void clear() {
         src.clear();
         registered.clear();
+        body_offset = 0;
     }
 };
 

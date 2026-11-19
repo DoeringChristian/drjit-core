@@ -1,0 +1,72 @@
+/*
+    resources/vulkan_kernels.comp -- Precompiled Vulkan utility kernels
+
+    Each kernel is a section of this file that is compiled separately with
+    '-D<NAME>' and the entry point '<name>', and the resulting modules are
+    linked into a single module with one entry point per kernel (see the
+    'vulkan' target of the Makefile).
+
+    The kernels access memory through device addresses, and receive their
+    parameters as push constants. The workgroup size is specialization constant
+    0, and threads process the elements in a grid-stride loop.
+
+    Copyright (c) 2026 Christian Döring <christian.doering@tum.de>
+
+    All rights reserved. Use of this source code is governed by a BSD-style
+    license that can be found in the LICENSE file.
+*/
+
+#version 460
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+
+layout(local_size_x_id = 0) in;
+
+layout(buffer_reference, buffer_reference_align = 1) buffer U8 { uint8_t v; };
+layout(buffer_reference, buffer_reference_align = 2) buffer U16 { uint16_t v; };
+layout(buffer_reference, buffer_reference_align = 4) buffer U32 { uint32_t v; };
+layout(buffer_reference, buffer_reference_align = 8) buffer U64 { uint64_t v; };
+
+// ============================================================================
+//  aggregate -- populate a per-vcall data buffer from a list of entries.
+//  Refer to the CUDA version of this kernel in misc.cuh for more details.
+// ============================================================================
+
+#if defined(AGGREGATE)
+struct AggregationEntry {
+    int16_t size;
+    uint16_t resource_kind; // ignored
+    uint32_t offset;
+    uint64_t src;
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer
+AggregationEntries { AggregationEntry e[]; };
+
+layout(push_constant) uniform Params {
+    uint64_t dst;
+    AggregationEntries in_;
+    uint32_t size;
+} params;
+
+void main() {
+    uint32_t stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+    for (uint32_t i = gl_GlobalInvocationID.x; i < params.size; i += stride) {
+        AggregationEntry rec = params.in_.e[i];
+        uint64_t dst = params.dst + rec.offset;
+
+        switch (int(rec.size)) {
+            case  1: U8(dst).v  = uint8_t(rec.src); break;
+            case  2: U16(dst).v = uint16_t(rec.src); break;
+            case  4: U32(dst).v = uint32_t(rec.src); break;
+            case  8: U64(dst).v = rec.src; break;
+            case -1: U8(dst).v  = U8(rec.src).v; break;
+            case -2: U16(dst).v = U16(rec.src).v; break;
+            case -4: U32(dst).v = U32(rec.src).v; break;
+            case -8: U64(dst).v = U64(rec.src).v; break;
+        }
+    }
+}
+#endif
