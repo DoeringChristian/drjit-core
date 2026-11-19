@@ -14,8 +14,8 @@ extern "C" {
 #endif
 
 extern const char vulkan_kernels[];
-static const size_t vulkan_kernels_size_uncompressed = 4380;
-static const size_t vulkan_kernels_size_compressed = 2181;
+static const size_t vulkan_kernels_size_uncompressed = 17040;
+static const size_t vulkan_kernels_size_compressed = 6789;
 
 #ifdef __cplusplus
 }

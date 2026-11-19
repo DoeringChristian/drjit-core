@@ -12,6 +12,7 @@
 #include "vulkan.h"
 #include "vulkan_api.h"
 #include "vulkan_ts.h"
+#include "vulkan_tex.h"
 #include "buffer_map.h"
 #include "internal.h"
 #include "eval.h"
@@ -120,6 +121,30 @@ void *vulkan_buffer_new(int device, size_t size, bool shared, void **ptr_out) {
     return new VulkanBuffer { dev, buffer, memory };
 }
 
+void *jitc_vulkan_image_memory(int device, void *image, size_t *size_out) {
+    VkDevice dev = (VkDevice) state.vulkan_devices[device].device;
+
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(dev, (VkImage) image, &req);
+    int type = vulkan_memory_type(vulkan_memory_properties[device],
+                                  req.memoryTypeBits,
+                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+
+    VkMemoryAllocateInfo alloc_info {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc_info.allocationSize = req.size;
+    alloc_info.memoryTypeIndex = (uint32_t) type;
+
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    if (type < 0 ||
+        vkAllocateMemory(dev, &alloc_info, nullptr, &memory) != VK_SUCCESS)
+        return nullptr;
+
+    vulkan_check(vkBindImageMemory(dev, (VkImage) image, memory, 0));
+    *size_out = (size_t) req.size;
+    return (void *) memory;
+}
+
 void vulkan_buffer_free(void *buffer) {
     VulkanBuffer *b = (VulkanBuffer *) buffer;
     vkDestroyBuffer((VkDevice) b->device, (VkBuffer) b->buffer, nullptr);
@@ -169,7 +194,9 @@ uint64_t jitc_vulkan_device_address(void *ptr) {
 /// Entry point names, indexed by VulkanKernel. The order must match the
 /// VulkanKernel enum in internal.h.
 static const char *vulkan_kernel_names[(uint32_t) VulkanKernel::Count] = {
-    "aggregate"
+    "aggregate",
+    "deinterleave_u8", "deinterleave_u16", "deinterleave_u32",
+    "interleave_u8", "interleave_u16", "interleave_u32"
 };
 
 /// Create the pipelines of the utility kernels in the module ``spirv``. Their
@@ -341,10 +368,11 @@ static XXH128_hash_t jitc_vulkan_disk_key(const VulkanDevice &dev,
 }
 
 /// Append the body of ``unit`` to ``out`` and replace the placeholders
-/// '@<hash>' of call dispatches by callable indices. A non-null ``prefix`` is
-/// prepended to the IDs defined in the body.
-static void jitc_vulkan_link_body(StringBuffer &out, const UnitBuilder *unit,
-                                  const char *prefix) {
+/// '@<hash>' of call dispatches by callable indices. Decorations go to
+/// ``annotations`` instead, since SPIR-V requires them to precede all types. A
+/// non-null ``prefix`` is prepended to the IDs defined in the body.
+static void jitc_vulkan_link_body(StringBuffer &out, StringBuffer &annotations,
+                                  const UnitBuilder *unit, const char *prefix) {
     const char *start = unit->src.get() + unit->body_offset,
                *end = unit->src.get() + unit->src.size();
     auto is_id_char = [](char c) {
@@ -370,15 +398,19 @@ static void jitc_vulkan_link_body(StringBuffer &out, const UnitBuilder *unit,
         }
     }
 
+    StringBuffer *dst = &out;
     for (const char *p = start; p < end; ) {
+        if (p == start || p[-1] == '\n')
+            dst = strncmp(p, "OpDecorate ", 11) == 0 ? &annotations : &out;
+
         if (*p == '%' && prefix) {
             const char *q = p + 1;
             while (q < end && is_id_char(*q))
                 q++;
-            out.put('%');
+            dst->put('%');
             if (defined.count(std::string_view(p + 1, q - p - 1)))
-                out.put(prefix, strlen(prefix));
-            out.put(p + 1, q - p - 1);
+                dst->put(prefix, strlen(prefix));
+            dst->put(p + 1, q - p - 1);
             p = q;
         } else if (*p == '@') {
             char tmp[17] = { };
@@ -387,22 +419,45 @@ static void jitc_vulkan_link_body(StringBuffer &out, const UnitBuilder *unit,
             hash.high64 = strtoull(tmp, nullptr, 16);
             memcpy(tmp, p + 17, 16);
             hash.low64 = strtoull(tmp, nullptr, 16);
-            out.put_u32(jitc_unit_callable_index(hash));
+            dst->put_u32(jitc_unit_callable_index(hash));
             p += 33;
         } else {
-            out.put(*p++);
+            dst->put(*p++);
         }
     }
 }
 
+/// Source of the module combining the units of the kernel being compiled, and
+/// the annotations and functions collected while building it
+static StringBuffer jitc_vulkan_module_src { 1024 };
+static StringBuffer jitc_vulkan_module_annotations { 1024 };
+static StringBuffer jitc_vulkan_module_funcs { 1024 };
+
 /// Combine the units of a kernel into a single SPIR-V module, the counterpart
 /// of the link step of the other backends. The module consists of the
-/// prologue, the declarations of all units (without duplicates), and the
-/// functions. IDs are global in a SPIR-V module, hence those defined by
-/// callable 'k' are renamed to '%f<k>_<name>'.
+/// prologue, the decorations of the functions, the declarations of all units
+/// (without duplicates), and the functions. IDs are global in a SPIR-V
+/// module, hence those defined by callable 'k' are renamed to '%f<k>_<name>'.
 static void jitc_vulkan_link(StringBuffer &out) {
+    StringBuffer &annotations = jitc_vulkan_module_annotations,
+                 &funcs = jitc_vulkan_module_funcs;
+    annotations.clear();
+    funcs.clear();
+
+    jitc_vulkan_link_body(funcs, annotations, unit_entry, nullptr);
+    for (size_t k = 0; k < callable_units.size(); ++k) {
+        char prefix[32];
+        snprintf(prefix, sizeof(prefix), "f%zu_", k);
+        jitc_vulkan_link_body(funcs, annotations, callable_units[k].unit,
+                              prefix);
+    }
+
+    // The prologue ends with the annotation section
     out.clear();
-    out.put(unit_entry->src.get(), unit_entry->body_offset);
+    out.put(unit_entry->src.get(), unit_prologue.size());
+    out.put(annotations.get(), annotations.size());
+    out.put(unit_entry->src.get() + unit_prologue.size(),
+            unit_entry->body_offset - unit_prologue.size());
 
     tsl::robin_set<XXH128_hash_t, XXH128Hasher, XXH128Eq> declared =
         unit_entry->registered;
@@ -417,16 +472,8 @@ static void jitc_vulkan_link(StringBuffer &out) {
         }
     }
 
-    jitc_vulkan_link_body(out, unit_entry, nullptr);
-    for (size_t k = 0; k < callable_units.size(); ++k) {
-        char prefix[32];
-        snprintf(prefix, sizeof(prefix), "f%zu_", k);
-        jitc_vulkan_link_body(out, callable_units[k].unit, prefix);
-    }
+    out.put(funcs.get(), funcs.size());
 }
-
-/// Source of the module combining the units of the kernel being compiled
-static StringBuffer jitc_vulkan_module_src { 1024 };
 
 bool jitc_vulkan_kernel_compile(ThreadState *ts, Kernel &kernel) {
     const VulkanDevice &dev = state.vulkan_devices[ts->device];
@@ -588,6 +635,26 @@ static uint32_t jitc_vulkan_block_size(VkPhysicalDevice pdev) {
                     p.properties.limits.maxComputeWorkGroupInvocations);
 }
 
+/// Number of textures per dimension of the texture heap of ``pdev``. Every
+/// texture occupies a sampled image and a sampler descriptor.
+static uint32_t jitc_vulkan_heap_size(VkPhysicalDevice pdev) {
+    VkPhysicalDeviceVulkan12Properties p12 {};
+    p12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES;
+
+    VkPhysicalDeviceProperties2 p {};
+    p.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    p.pNext = &p12;
+    vkGetPhysicalDeviceProperties2(pdev, &p);
+
+    uint32_t limit = std::min({
+        p12.maxPerStageDescriptorUpdateAfterBindSampledImages,
+        p12.maxPerStageDescriptorUpdateAfterBindSamplers,
+        p12.maxDescriptorSetUpdateAfterBindSampledImages,
+        p12.maxDescriptorSetUpdateAfterBindSamplers,
+        p12.maxPerStageUpdateAfterBindResources });
+    return std::min(limit / 3, 65536u);
+}
+
 /// Return the name of the first feature required by Dr.Jit that ``pdev``
 /// lacks, or nullptr if it supports all of them
 static const char *jitc_vulkan_missing_feature(VkPhysicalDevice pdev) {
@@ -613,6 +680,17 @@ static const char *jitc_vulkan_missing_feature(VkPhysicalDevice pdev) {
     if (!f12.storageBuffer8BitAccess)    return "storageBuffer8BitAccess";
     if (!f12.bufferDeviceAddress)        return "bufferDeviceAddress";
     if (!f12.timelineSemaphore)          return "timelineSemaphore";
+
+    // Texture heap (see vulkan_tex.cpp)
+    if (!f12.runtimeDescriptorArray)     return "runtimeDescriptorArray";
+    if (!f12.descriptorBindingPartiallyBound)
+        return "descriptorBindingPartiallyBound";
+    if (!f12.descriptorBindingSampledImageUpdateAfterBind)
+        return "descriptorBindingSampledImageUpdateAfterBind";
+    if (!f12.descriptorBindingUpdateUnusedWhilePending)
+        return "descriptorBindingUpdateUnusedWhilePending";
+    if (!f12.shaderSampledImageArrayNonUniformIndexing)
+        return "shaderSampledImageArrayNonUniformIndexing";
     return nullptr;
 }
 
@@ -748,6 +826,11 @@ bool jitc_vulkan_init() {
         f12.storageBuffer8BitAccess = VK_TRUE;
         f12.bufferDeviceAddress = VK_TRUE;
         f12.timelineSemaphore = VK_TRUE;
+        f12.runtimeDescriptorArray = VK_TRUE;
+        f12.descriptorBindingPartiallyBound = VK_TRUE;
+        f12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+        f12.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+        f12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 
         VkPhysicalDeviceVulkan11Features f11 {};
         f11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
@@ -823,8 +906,12 @@ bool jitc_vulkan_init() {
         push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         push_range.size = 128;
 
+        jitc_vulkan_heap_init(device, jitc_vulkan_heap_size(pdev));
+
         VkPipelineLayoutCreateInfo layout_info {};
         layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layout_info.setLayoutCount = 1;
+        layout_info.pSetLayouts = (VkDescriptorSetLayout *) &device.heap_layout;
         layout_info.pushConstantRangeCount = 1;
         layout_info.pPushConstantRanges = &push_range;
         vulkan_check(vkCreatePipelineLayout(dev, &layout_info, nullptr,
@@ -933,6 +1020,7 @@ void jitc_vulkan_shutdown() {
                               (VkShaderModule) dev.utility_module, nullptr);
         vkDestroyPipelineLayout((VkDevice) dev.device,
                                 (VkPipelineLayout) dev.layout, nullptr);
+        jitc_vulkan_heap_shutdown(dev);
         vkDestroyDevice((VkDevice) dev.device, nullptr);
         std::free(dev.name);
     }

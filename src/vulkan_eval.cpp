@@ -200,11 +200,12 @@ void jitc_vulkan_render_store(const Variable *v, const char *tag,
     }
 }
 
-void jitc_vulkan_render_if(const Variable *v, const Variable *mask) {
+void jitc_vulkan_render_if(const Variable *v, const Variable *mask,
+                           const char *suffix) {
     fmt("OpSelectionMerge %$v_e None\n"
-        "OpBranchConditional %$v %$v_t %$v_f\n"
+        "OpBranchConditional %$v$s %$v_t %$v_f\n"
         "%$v_t = OpLabel\n",
-        v, mask, v, v, v);
+        v, mask, suffix, v, v, v);
 }
 
 void jitc_vulkan_render_endif(const Variable *v) {
@@ -229,7 +230,11 @@ void jitc_vulkan_render_prologue(ThreadState *ts) {
         "OpCapability PhysicalStorageBufferAddresses\n"
         "OpCapability StorageBuffer8BitAccess\n"
         "OpCapability StorageBuffer16BitAccess\n"
-        "OpCapability Int64Atomics\n");
+        "OpCapability Int64Atomics\n"
+        "OpCapability Sampled1D\n"
+        "OpCapability RuntimeDescriptorArray\n"
+        "OpCapability ShaderNonUniform\n"
+        "OpCapability SampledImageArrayNonUniformIndexing\n");
     if (dev.atomic_float32_add)
         put("OpCapability AtomicFloat32AddEXT\n");
     if (dev.atomic_float64_add)
@@ -239,12 +244,16 @@ void jitc_vulkan_render_prologue(ThreadState *ts) {
     put("%glsl = OpExtInstImport \"GLSL.std.450\"\n"
         "OpMemoryModel PhysicalStorageBuffer64 GLSL450\n"
         "OpEntryPoint GLCompute %main "
-        "\"drjit_^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\" %gid %nwg %push\n");
+        "\"drjit_^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\" %gid %nwg %push "
+        "%tex1 %tex2 %tex3\n");
     fmt("OpExecutionMode %main LocalSize $u 1 1\n", dev.block_size);
     put("OpDecorate %gid BuiltIn GlobalInvocationId\n"
         "OpDecorate %nwg BuiltIn NumWorkgroups\n"
         "OpDecorate %Push Block\n"
         "OpMemberDecorate %Push 0 Offset 0\n");
+    for (uint32_t i = 1; i <= 3; ++i)
+        fmt("OpDecorate %tex$u DescriptorSet 0\n"
+            "OpDecorate %tex$u Binding $u\n", i, i, i - 1);
 }
 
 void jitc_vulkan_assemble(ThreadState *ts, ScheduledGroup group,
@@ -267,6 +276,22 @@ void jitc_vulkan_assemble(ThreadState *ts, ScheduledGroup group,
     jitc_vulkan_declare_const(VarType::UInt32, 0);
     const VulkanDevice &dev = state.vulkan_devices[ts->device];
     jitc_vulkan_declare_const(VarType::UInt32, dev.block_size);
+
+    // The texture heap '%tex<ndim>' is part of the interface of every kernel
+    // (see jitc_vulkan_render_prologue())
+    jitc_vulkan_declare_type(VarType::Float32);
+    for (uint32_t i = 1; i <= 3; ++i) {
+        fmt_intrinsic("%img$u = OpTypeImage %f32 $s 0 0 0 1 Unknown", i,
+                      i == 1 ? "1D" : (i == 2 ? "2D" : "3D"));
+        fmt_intrinsic("%simg$u = OpTypeSampledImage %img$u", i, i);
+        fmt_intrinsic("%ptr_simg$u = OpTypePointer UniformConstant %simg$u",
+                      i, i);
+        fmt_intrinsic("%arr_simg$u = OpTypeRuntimeArray %simg$u", i, i);
+        fmt_intrinsic("%ptr_arr_simg$u = OpTypePointer UniformConstant "
+                      "%arr_simg$u", i, i);
+        fmt_intrinsic("%tex$u = OpVariable %ptr_arr_simg$u UniformConstant",
+                      i, i);
+    }
 
     // The number of workgroups is limited by the device, hence threads
     // process the elements in a grid-stride loop
@@ -587,6 +612,63 @@ static void jitc_vulkan_render_bits(Variable *v) {
         narrow ? "n" : "w");
 }
 
+/// Sample the texture in the heap slot 'dep[0]' at the coordinates
+/// 'dep[1..3]' into '%<v>_out_<i>'. Masked lookups (see
+/// jitc_vulkan_tex_lookup()) are skipped in lanes whose slot is zero.
+static void jitc_vulkan_render_tex_lookup(const Variable *v) {
+    const Variable *slot = jitc_var(v->dep[0]),
+                   *c0 = jitc_var(v->dep[1]),
+                   *c1 = v->dep[2] ? jitc_var(v->dep[2]) : nullptr,
+                   *c2 = v->dep[3] ? jitc_var(v->dep[3]) : nullptr;
+    uint32_t ndim = c2 ? 3 : (c1 ? 2 : 1);
+    bool masked = v->literal != 0;
+
+    fmt_intrinsic("%v4f32 = OpTypeVector %f32 4");
+    jitc_vulkan_declare_const(VarType::Float32, 0);
+
+    if (masked) {
+        jitc_vulkan_declare_const(VarType::UInt64, 0);
+        fmt("%$v_m = OpINotEqual %bool %$v %c_u64_0\n", v, slot);
+        jitc_vulkan_render_if(v, v, "_m");
+    }
+
+    // The slot may differ between lanes
+    fmt("%$v_ti = OpUConvert %u32 %$v\n"
+        "%$v_tp = OpAccessChain %ptr_simg$u %tex$u %$v_ti\n"
+        "%$v_ts = OpLoad %simg$u %$v_tp\n"
+        "OpDecorate %$v_tp NonUniform\n"
+        "OpDecorate %$v_ts NonUniform\n",
+        v, slot,
+        v, ndim, ndim, v,
+        v, ndim, v,
+        v, v);
+
+    if (ndim == 1) {
+        fmt("%$v_tc = OpCopyObject %f32 %$v\n", v, c0);
+    } else if (ndim == 2) {
+        fmt_intrinsic("%v2f32 = OpTypeVector %f32 2");
+        fmt("%$v_tc = OpCompositeConstruct %v2f32 %$v %$v\n", v, c0, c1);
+    } else {
+        fmt_intrinsic("%v3f32 = OpTypeVector %f32 3");
+        fmt("%$v_tc = OpCompositeConstruct %v3f32 %$v %$v %$v\n", v, c0, c1,
+            c2);
+    }
+
+    fmt("%$v_s = OpImageSampleExplicitLod %v4f32 %$v_ts %$v_tc Lod "
+        "%c_f32_0\n", v, v, v);
+
+    if (masked) {
+        fmt_intrinsic("%null_v4f32 = OpConstantNull %v4f32");
+        jitc_vulkan_render_endif(v);
+        fmt("%$v_r = OpPhi %v4f32 %$v_s %$v_d %null_v4f32 %$v_f\n", v, v, v,
+            v);
+    }
+
+    for (uint32_t i = 0; i < 4; ++i)
+        fmt("%$v_out_$u = OpCompositeExtract %f32 %$v_$s $u\n", v, i, v,
+            masked ? "r" : "s", i);
+}
+
 static void jitc_vulkan_render(Variable *v) {
     Variable *a0 = v->dep[0] ? jitc_var(v->dep[0]) : nullptr,
              *a1 = v->dep[1] ? jitc_var(v->dep[1]) : nullptr,
@@ -682,6 +764,10 @@ static void jitc_vulkan_render(Variable *v) {
         case VarKind::ScatterInc:  jitc_vulkan_render_scatter_inc(v);  break;
         case VarKind::ScatterExch: jitc_vulkan_render_scatter_exch(v); break;
         case VarKind::ScatterCAS:  jitc_vulkan_render_scatter_cas(v);  break;
+
+        case VarKind::TexLookup:
+            jitc_vulkan_render_tex_lookup(v);
+            break;
 
         // Outputs of operations with several results are '%<src>_out_<i>'
         case VarKind::Extract:

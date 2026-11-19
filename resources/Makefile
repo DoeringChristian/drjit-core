@@ -45,7 +45,8 @@ metal_kernels.lz4: pack metal_kernels.metallib
 # Precompiled Vulkan kernels shipped with Dr.Jit-core. Requires glslang and the
 # SPIRV-Tools command line tools. Each kernel is compiled separately (see
 # vulkan_kernels.comp), and the modules are linked into one.
-VULKAN_KERNELS=aggregate
+VULKAN_KERNELS=aggregate deinterleave_u8 deinterleave_u16 deinterleave_u32 \
+               interleave_u8 interleave_u16 interleave_u32
 GLSLANG=glslangValidator -V --target-env vulkan1.2
 
 vulkan: vulkan_kernels.lz4

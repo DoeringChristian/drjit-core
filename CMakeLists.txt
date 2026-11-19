@@ -213,7 +213,9 @@ if (DRJIT_ENABLE_VULKAN)
     src/vulkan_packet.h
     src/vulkan_packet.cpp
     src/vulkan_array.h
-    src/vulkan_array.cpp)
+    src/vulkan_array.cpp
+    src/vulkan_tex.h
+    src/vulkan_tex.cpp)
 endif()
 
 

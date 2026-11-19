@@ -68,6 +68,11 @@ struct VulkanBuffer {
 extern void *vulkan_buffer_new(int device, size_t size, bool shared,
                                void **ptr_out);
 
+/// Allocate device-local memory for the VkImage ``image`` and bind it. Returns
+/// the VkDeviceMemory and its size, or nullptr if the allocation failed.
+extern void *jitc_vulkan_image_memory(int device, void *image,
+                                      size_t *size_out);
+
 /// Release a buffer handle allocated by ``vulkan_buffer_new``.
 extern void vulkan_buffer_free(void *buffer);
 

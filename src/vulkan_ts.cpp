@@ -73,6 +73,15 @@ void *VulkanThreadState::ensure_cmdbuf() {
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vulkan_check(vkBeginCommandBuffer((VkCommandBuffer) vulkan_cb,
                                           &begin_info));
+
+        // All kernels share the pipeline layout, hence the texture heap stays
+        // bound across pipelines
+        const VulkanDevice &dev = state.vulkan_devices[device];
+        VkDescriptorSet heap = (VkDescriptorSet) dev.heap;
+        vkCmdBindDescriptorSets((VkCommandBuffer) vulkan_cb,
+                                VK_PIPELINE_BIND_POINT_COMPUTE,
+                                (VkPipelineLayout) dev.layout, 0, 1, &heap, 0,
+                                nullptr);
     }
 
     jitc_vulkan_barrier((VkCommandBuffer) vulkan_cb,
@@ -310,11 +319,9 @@ void VulkanThreadState::poke(void *dst, const void *src, uint32_t size) {
 //  Utility kernels (see resources/vulkan_kernels.comp)
 // ============================================================================
 
-/// Dispatch the utility kernel ``kernel`` with the push constants ``params``
-/// over ``size`` elements
-static void jitc_vulkan_launch_utility(VulkanThreadState *ts,
-                                       VulkanKernel kernel, const void *params,
-                                       uint32_t params_size, uint32_t size) {
+void jitc_vulkan_launch_utility(VulkanThreadState *ts, VulkanKernel kernel,
+                                const void *params, uint32_t params_size,
+                                uint32_t size) {
     const VulkanDevice &dev = state.vulkan_devices[ts->device];
     uint32_t groups = std::min((size + dev.block_size - 1) / dev.block_size,
                                dev.max_group_count);

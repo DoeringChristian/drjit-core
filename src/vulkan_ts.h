@@ -89,4 +89,10 @@ struct VulkanThreadState final : ThreadState {
                        void *out, const MatrixDescr *out_d) override;
 };
 
+/// Dispatch the utility kernel ``kernel`` with the push constants ``params``
+/// over ``size`` elements
+extern void jitc_vulkan_launch_utility(VulkanThreadState *ts,
+                                       VulkanKernel kernel, const void *params,
+                                       uint32_t params_size, uint32_t size);
+
 #endif // defined(DRJIT_ENABLE_VULKAN)

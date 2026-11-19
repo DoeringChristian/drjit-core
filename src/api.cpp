@@ -49,6 +49,7 @@
 
 #if defined(DRJIT_ENABLE_VULKAN)
 #  include "vulkan_ts.h"
+#  include "vulkan_tex.h"
 #endif
 
 #include <nanothread/nanothread.h>
@@ -1567,8 +1568,8 @@ void jit_llvm_ray_trace(uint32_t func, uint32_t scene, int shadow_ray,
     jitc_llvm_ray_trace(func, scene, shadow_ray, in, out);
 }
 
-// Hardware textures dispatch to the CUDA or Metal implementation based on
-// ``backend``; any other backend (or one not compiled in) raises.
+// Hardware textures dispatch to the CUDA, Metal, or Vulkan implementation
+// based on ``backend``; any other backend (or one not compiled in) raises.
 static void jit_tex_unavailable(JitBackend backend) {
     jitc_raise("jit_tex_*(): hardware textures are not available for the '%s' "
                "backend (unsupported, or not compiled into this build).",
@@ -1614,6 +1615,13 @@ void *jit_tex_create(JitBackend backend, size_t ndim, const size_t *shape,
                                      n_levels, mip_filter, max_aniso,
                                      compression);
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend))
+        return jitc_vulkan_tex_create(ndim, shape, n_channels, format,
+                                      filter_mode, wrap_mode, writable, srgb,
+                                      n_levels, mip_filter, max_aniso,
+                                      compression);
+#endif
     jit_tex_unavailable(backend);
     return nullptr;
 }
@@ -1628,6 +1636,10 @@ void jit_tex_get_shape(const void *handle, size_t *shape) {
 #if defined(DRJIT_ENABLE_METAL)
     if (jitc_is_metal(backend))
         return jitc_metal_tex_get_shape(handle, shape);
+#endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend))
+        return jitc_vulkan_tex_get_shape(handle, shape);
 #endif
     jit_tex_unavailable(backend);
 }
@@ -1645,6 +1657,10 @@ void jit_tex_get_indices(const void *handle, uint32_t *indices) {
     if (jitc_is_metal(backend))
         return jitc_metal_tex_get_indices(handle, indices);
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend))
+        return jitc_vulkan_tex_get_indices(handle, indices);
+#endif
     jit_tex_unavailable(backend);
 }
 
@@ -1658,6 +1674,10 @@ void jit_tex_memcpy_d2t(const void *src_ptr, void *dst_handle, size_t level) {
 #if defined(DRJIT_ENABLE_METAL)
     if (jitc_is_metal(backend))
         return jitc_metal_tex_memcpy_d2t(src_ptr, dst_handle, level);
+#endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend))
+        return jitc_vulkan_tex_memcpy_d2t(src_ptr, dst_handle, level);
 #endif
     jit_tex_unavailable(backend);
 }
@@ -1673,6 +1693,10 @@ void jit_tex_memcpy_t2d(const void *src_handle, void *dst_ptr) {
     if (jitc_is_metal(backend))
         return jitc_metal_tex_memcpy_t2d(src_handle, dst_ptr);
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend))
+        return jitc_vulkan_tex_memcpy_t2d(src_handle, dst_ptr);
+#endif
     jit_tex_unavailable(backend);
 }
 
@@ -1687,6 +1711,10 @@ void jit_tex_lookup(const void *handle, const uint32_t *pos, uint32_t active,
 #if defined(DRJIT_ENABLE_METAL)
     if (jitc_is_metal(backend))
         return jitc_metal_tex_lookup(handle, pos, active, out);
+#endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend))
+        return jitc_vulkan_tex_lookup(handle, pos, active, out);
 #endif
     jit_tex_unavailable(backend);
 }
@@ -1800,6 +1828,10 @@ uintptr_t jit_tex_native_handle(const void *handle, size_t sub_index) {
     if (jitc_is_metal(backend))
         return jitc_metal_tex_native_handle(handle, sub_index);
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend))
+        return jitc_vulkan_tex_native_handle(handle, sub_index);
+#endif
     jit_tex_unavailable(backend);
     return 0;
 }
@@ -1816,6 +1848,10 @@ void jit_tex_destroy(void *handle) {
 #if defined(DRJIT_ENABLE_METAL)
     if (jitc_is_metal(backend))
         return jitc_metal_tex_destroy(handle);
+#endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend))
+        return jitc_vulkan_tex_destroy(handle);
 #endif
     jit_tex_unavailable(backend);
 }

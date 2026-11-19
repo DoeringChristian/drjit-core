@@ -70,3 +70,57 @@ void main() {
     }
 }
 #endif
+
+// ============================================================================
+//  deinterleave / interleave -- convert between the interleaved channels of a
+//  texture in linear memory and the packed 1/2/4-channel layout of one of its
+//  sub-textures. Refer to the Metal version of these kernels in
+//  metal_kernels.metal for more details.
+// ============================================================================
+
+#if defined(DEINTERLEAVE_U8) || defined(INTERLEAVE_U8)
+#  define T uint8_t
+#  define REF U8
+#  define T_SIZE uint64_t(1)
+#elif defined(DEINTERLEAVE_U16) || defined(INTERLEAVE_U16)
+#  define T uint16_t
+#  define REF U16
+#  define T_SIZE uint64_t(2)
+#elif defined(DEINTERLEAVE_U32) || defined(INTERLEAVE_U32)
+#  define T uint32_t
+#  define REF U32
+#  define T_SIZE uint64_t(4)
+#endif
+
+#if defined(T)
+layout(push_constant) uniform Params {
+    uint64_t src;
+    uint64_t dst;
+    uint32_t n_channels; // Channels per texel in the interleaved layout
+    uint32_t ci;         // Channels per texel in the packed layout (1, 2, or 4)
+    uint32_t tex_base;   // First interleaved channel of this sub-texture
+    uint32_t c_valid;    // Number of real channels (the rest is padding)
+    uint32_t size;       // Number of values to write
+} params;
+
+void main() {
+    uint32_t stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+    for (uint32_t i = gl_GlobalInvocationID.x; i < params.size; i += stride) {
+#if defined(DEINTERLEAVE_U8) || defined(DEINTERLEAVE_U16) || defined(DEINTERLEAVE_U32)
+        uint64_t pix = i / params.ci;
+        uint32_t c = i % params.ci;
+        T value = T(0);
+        if (c < params.c_valid)
+            value = REF(params.src + (pix * params.n_channels +
+                                      params.tex_base + c) * T_SIZE).v;
+        REF(params.dst + uint64_t(i) * T_SIZE).v = value;
+#else
+        uint64_t pix = i / params.c_valid;
+        uint32_t c = i % params.c_valid;
+        REF(params.dst + (pix * params.n_channels + params.tex_base + c) *
+                             T_SIZE).v =
+            REF(params.src + (pix * params.ci + c) * T_SIZE).v;
+#endif
+    }
+}
+#endif

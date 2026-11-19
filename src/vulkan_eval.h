@@ -57,9 +57,11 @@ extern void jitc_vulkan_render_store(const Variable *v, const char *tag,
                                      const Variable *value);
 
 /// Begin a structured conditional block that only executes for lanes with an
-/// active ``mask``, and end it. Phi nodes following the block can merge values
-/// from its end ('%<v>_d') and from the inactive lanes ('%<v>_f').
-extern void jitc_vulkan_render_if(const Variable *v, const Variable *mask);
+/// active ``mask`` ('%<mask><suffix>'), and end it. Phi nodes following the
+/// block can merge values from its end ('%<v>_d') and from the inactive lanes
+/// ('%<v>_f').
+extern void jitc_vulkan_render_if(const Variable *v, const Variable *mask,
+                                  const char *suffix = "");
 extern void jitc_vulkan_render_endif(const Variable *v);
 
 /// Fail with an error message naming the unsupported variable

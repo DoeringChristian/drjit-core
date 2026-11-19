@@ -165,6 +165,23 @@ bool jitc_vulkan_api_init_instance(VkInstance instance) {
         LOAD(vkGetPipelineCacheData);
         LOAD(vkCreateComputePipelines);
         LOAD(vkDestroyPipeline);
+        LOAD(vkCreateImage);
+        LOAD(vkDestroyImage);
+        LOAD(vkGetImageMemoryRequirements);
+        LOAD(vkBindImageMemory);
+        LOAD(vkCreateImageView);
+        LOAD(vkDestroyImageView);
+        LOAD(vkCreateSampler);
+        LOAD(vkDestroySampler);
+        LOAD(vkCreateDescriptorSetLayout);
+        LOAD(vkDestroyDescriptorSetLayout);
+        LOAD(vkCreateDescriptorPool);
+        LOAD(vkDestroyDescriptorPool);
+        LOAD(vkAllocateDescriptorSets);
+        LOAD(vkUpdateDescriptorSets);
+        LOAD(vkCmdBindDescriptorSets);
+        LOAD(vkCmdCopyBufferToImage);
+        LOAD(vkCmdCopyImageToBuffer);
 
         #undef LOAD
     } while (false);

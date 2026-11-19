@@ -771,6 +771,8 @@ struct MetalDevice {
 /// order must match ``vulkan_kernel_names`` in vulkan_core.cpp.
 enum class VulkanKernel : uint32_t {
     Aggregate,
+    DeinterleaveU8, DeinterleaveU16, DeinterleaveU32,
+    InterleaveU8, InterleaveU16, InterleaveU32,
     Count
 };
 
@@ -789,8 +791,17 @@ struct VulkanDevice {
 
     /// VkPipelineLayout shared by all kernels. Its push constants hold the
     /// address of the kernel parameter array, or the parameters of a utility
-    /// kernel.
+    /// kernel. Its descriptor set 0 is the texture heap.
     void *layout;
+
+    /// Texture heap: a VkDescriptorSet (with its VkDescriptorSetLayout and
+    /// VkDescriptorPool) holding arrays of 1D, 2D, and 3D textures, which
+    /// kernels index by the texture's slot. 'heap_state' holds the slot
+    /// allocator and the samplers (see vulkan_tex.cpp).
+    void *heap_layout;
+    void *heap_pool;
+    void *heap;
+    void *heap_state;
 
     /// VkShaderModule of the utility kernels, and their VkPipelines
     void *utility_module;
