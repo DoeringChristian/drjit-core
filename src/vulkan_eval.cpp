@@ -41,6 +41,7 @@
 #include "loop.h"
 #include "cond.h"
 #include "call.h"
+#include "tex.h"
 #include <string>
 
 // Forward declaration
@@ -612,21 +613,67 @@ static void jitc_vulkan_render_bits(Variable *v) {
         narrow ? "n" : "w");
 }
 
-/// Sample the texture in the heap slot 'dep[0]' at the coordinates
-/// 'dep[1..3]' into '%<v>_out_<i>'. Masked lookups (see
-/// jitc_vulkan_tex_lookup()) are skipped in lanes whose slot is zero.
+/// Combine the float32 variables ``c[0..ndim)`` into '%<v>_<suffix>' (a
+/// scalar for 1D, a vector otherwise)
+static void jitc_vulkan_render_tex_vec(const Variable *v, const char *suffix,
+                                       uint32_t ndim, const Variable **c) {
+    if (ndim == 1) {
+        fmt("%$v_$s = OpCopyObject %f32 %$v\n", v, suffix, c[0]);
+    } else if (ndim == 2) {
+        fmt_intrinsic("%v2f32 = OpTypeVector %f32 2");
+        fmt("%$v_$s = OpCompositeConstruct %v2f32 %$v %$v\n", v, suffix, c[0],
+            c[1]);
+    } else {
+        fmt_intrinsic("%v3f32 = OpTypeVector %f32 3");
+        fmt("%$v_$s = OpCompositeConstruct %v3f32 %$v %$v %$v\n", v, suffix,
+            c[0], c[1], c[2]);
+    }
+}
+
+/// Sample the texture in the heap slot 'dep[0]' into '%<v>_out_<i>'. The
+/// nodes have the layout of the CUDA backend:
+///
+/// - TexLookup: coordinates in dep[1..3]. Masked lookups (see
+///   jitc_vulkan_tex_lookup()) are skipped in lanes whose slot is zero.
+/// - TexLookupLod/Grad: optional mask in dep[1], coordinates and LOD or
+///   gradients in the TexData payload.
+/// - TexFetchBilerp: mask in dep[1], coordinates in dep[2..3], gathered
+///   channel in the literal.
 static void jitc_vulkan_render_tex_lookup(const Variable *v) {
-    const Variable *slot = jitc_var(v->dep[0]),
-                   *c0 = jitc_var(v->dep[1]),
-                   *c1 = v->dep[2] ? jitc_var(v->dep[2]) : nullptr,
-                   *c2 = v->dep[3] ? jitc_var(v->dep[3]) : nullptr;
-    uint32_t ndim = c2 ? 3 : (c1 ? 2 : 1);
-    bool masked = v->literal != 0;
+    VarKind kind = (VarKind) v->kind;
+    const Variable *slot = jitc_var(v->dep[0]), *mask = nullptr,
+                   *c[3] = { };
+    const TexData *td = nullptr;
+    uint32_t ndim = 0;
+
+    if (kind == VarKind::TexLookup) {
+        while (ndim < 3 && v->dep[ndim + 1]) {
+            c[ndim] = jitc_var(v->dep[ndim + 1]);
+            ndim++;
+        }
+    } else if (kind == VarKind::TexFetchBilerp) {
+        ndim = 2;
+        mask = jitc_var(v->dep[1]);
+        c[0] = jitc_var(v->dep[2]);
+        c[1] = jitc_var(v->dep[3]);
+    } else {
+        td = (const TexData *) v->data;
+        ndim = td->ndim;
+        mask = v->dep[1] ? jitc_var(v->dep[1]) : nullptr;
+        for (uint32_t i = 0; i < ndim; ++i)
+            c[i] = jitc_var(td->indices[i]);
+    }
+
+    if (mask && mask->is_literal() && mask->literal == 1)
+        mask = nullptr;
+    bool masked = mask || (kind == VarKind::TexLookup && v->literal);
 
     fmt_intrinsic("%v4f32 = OpTypeVector %f32 4");
     jitc_vulkan_declare_const(VarType::Float32, 0);
 
-    if (masked) {
+    if (mask) {
+        jitc_vulkan_render_if(v, mask);
+    } else if (masked) {
         jitc_vulkan_declare_const(VarType::UInt64, 0);
         fmt("%$v_m = OpINotEqual %bool %$v %c_u64_0\n", v, slot);
         jitc_vulkan_render_if(v, v, "_m");
@@ -643,19 +690,37 @@ static void jitc_vulkan_render_tex_lookup(const Variable *v) {
         v, ndim, v,
         v, v);
 
-    if (ndim == 1) {
-        fmt("%$v_tc = OpCopyObject %f32 %$v\n", v, c0);
-    } else if (ndim == 2) {
-        fmt_intrinsic("%v2f32 = OpTypeVector %f32 2");
-        fmt("%$v_tc = OpCompositeConstruct %v2f32 %$v %$v\n", v, c0, c1);
-    } else {
-        fmt_intrinsic("%v3f32 = OpTypeVector %f32 3");
-        fmt("%$v_tc = OpCompositeConstruct %v3f32 %$v %$v %$v\n", v, c0, c1,
-            c2);
-    }
+    jitc_vulkan_render_tex_vec(v, "tc", ndim, c);
 
-    fmt("%$v_s = OpImageSampleExplicitLod %v4f32 %$v_ts %$v_tc Lod "
-        "%c_f32_0\n", v, v, v);
+    switch (kind) {
+        case VarKind::TexLookupLod:
+            fmt("%$v_s = OpImageSampleExplicitLod %v4f32 %$v_ts %$v_tc Lod "
+                "%$v\n", v, v, v, jitc_var(td->values[0]));
+            break;
+
+        case VarKind::TexLookupGrad: {
+            // ddx per dimension first, then ddy
+            const Variable *g[6];
+            for (uint32_t i = 0; i < 2 * ndim; ++i)
+                g[i] = jitc_var(td->values[i]);
+            jitc_vulkan_render_tex_vec(v, "gx", ndim, g);
+            jitc_vulkan_render_tex_vec(v, "gy", ndim, g + ndim);
+            fmt("%$v_s = OpImageSampleExplicitLod %v4f32 %$v_ts %$v_tc Grad "
+                "%$v_gx %$v_gy\n", v, v, v, v, v);
+            break;
+        }
+
+        case VarKind::TexFetchBilerp:
+            jitc_vulkan_declare_const(VarType::UInt32, (uint32_t) v->literal);
+            fmt("%$v_s = OpImageGather %v4f32 %$v_ts %$v_tc %c_u32_$u\n", v,
+                v, v, (uint32_t) v->literal);
+            break;
+
+        default:
+            fmt("%$v_s = OpImageSampleExplicitLod %v4f32 %$v_ts %$v_tc Lod "
+                "%c_f32_0\n", v, v, v);
+            break;
+    }
 
     if (masked) {
         fmt_intrinsic("%null_v4f32 = OpConstantNull %v4f32");
@@ -766,6 +831,9 @@ static void jitc_vulkan_render(Variable *v) {
         case VarKind::ScatterCAS:  jitc_vulkan_render_scatter_cas(v);  break;
 
         case VarKind::TexLookup:
+        case VarKind::TexLookupLod:
+        case VarKind::TexLookupGrad:
+        case VarKind::TexFetchBilerp:
             jitc_vulkan_render_tex_lookup(v);
             break;
 

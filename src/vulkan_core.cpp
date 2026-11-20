@@ -691,6 +691,7 @@ static const char *jitc_vulkan_missing_feature(VkPhysicalDevice pdev) {
         return "descriptorBindingUpdateUnusedWhilePending";
     if (!f12.shaderSampledImageArrayNonUniformIndexing)
         return "shaderSampledImageArrayNonUniformIndexing";
+    if (!f.features.samplerAnisotropy)   return "samplerAnisotropy";
     return nullptr;
 }
 
@@ -867,6 +868,7 @@ bool jitc_vulkan_init() {
         features.features.shaderInt16 = VK_TRUE;
         features.features.shaderInt64 = VK_TRUE;
         features.features.shaderFloat64 = VK_TRUE;
+        features.features.samplerAnisotropy = VK_TRUE;
 
         VkDeviceCreateInfo device_info {};
         device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

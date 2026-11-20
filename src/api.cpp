@@ -1731,6 +1731,10 @@ void jit_tex_lookup_lod(const void *handle, const uint32_t *pos, uint32_t lod,
     if (jitc_is_metal(backend))
         return jitc_metal_tex_lookup_lod(handle, pos, lod, active, out);
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend))
+        return jitc_vulkan_tex_lookup_lod(handle, pos, lod, active, out);
+#endif
     jit_tex_unavailable(backend);
 }
 
@@ -1747,6 +1751,10 @@ void jit_tex_lookup_grad(const void *handle, const uint32_t *pos,
     if (jitc_is_metal(backend))
         return jitc_metal_tex_lookup_grad(handle, pos, ddx, ddy, active, out);
 #endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend))
+        return jitc_vulkan_tex_lookup_grad(handle, pos, ddx, ddy, active, out);
+#endif
     jit_tex_unavailable(backend);
 }
 
@@ -1761,6 +1769,10 @@ void jit_tex_bilerp_fetch(const void *handle, const uint32_t *pos,
 #if defined(DRJIT_ENABLE_METAL)
     if (jitc_is_metal(backend))
         return jitc_metal_tex_bilerp_fetch(handle, pos, active, out);
+#endif
+#if defined(DRJIT_ENABLE_VULKAN)
+    if (jitc_is_vulkan(backend))
+        return jitc_vulkan_tex_bilerp_fetch(handle, pos, active, out);
 #endif
     jit_tex_unavailable(backend);
 }

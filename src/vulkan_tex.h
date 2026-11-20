@@ -44,6 +44,17 @@ extern void jitc_vulkan_tex_memcpy_t2d(const void *src_handle,
                                        void *dst_ptr);
 extern void jitc_vulkan_tex_lookup(const void *handle, const uint32_t *pos,
                                    uint32_t active, uint32_t *out);
+extern void jitc_vulkan_tex_lookup_lod(const void *handle,
+                                       const uint32_t *pos, uint32_t lod,
+                                       uint32_t active, uint32_t *out);
+extern void jitc_vulkan_tex_lookup_grad(const void *handle,
+                                        const uint32_t *pos,
+                                        const uint32_t *ddx,
+                                        const uint32_t *ddy, uint32_t active,
+                                        uint32_t *out);
+extern void jitc_vulkan_tex_bilerp_fetch(const void *handle,
+                                         const uint32_t *pos, uint32_t active,
+                                         uint32_t *out);
 extern void jitc_vulkan_tex_destroy(void *handle);
 
 #endif // defined(DRJIT_ENABLE_VULKAN)

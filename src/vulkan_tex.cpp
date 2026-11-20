@@ -228,7 +228,8 @@ static VkFormat vulkan_tex_format(int format, size_t channels, bool srgb) {
 
 /// Return the shared sampler with the given settings, creating it on first use
 static VkSampler vulkan_tex_sampler(VulkanHeap *heap, int filter_mode,
-                                    int wrap_mode, int mip_filter) {
+                                    int wrap_mode, int mip_filter,
+                                    size_t max_aniso) {
     VkFilter filter;
     switch (filter_mode) {
         case 0: filter = VK_FILTER_NEAREST; break;
@@ -244,8 +245,10 @@ static VkSampler vulkan_tex_sampler(VulkanHeap *heap, int filter_mode,
         default: jitc_raise("jit_tex_create(): invalid wrap mode!");
     }
 
+    max_aniso = max_aniso < 1 ? 1 : (max_aniso > 16 ? 16 : max_aniso);
     uint32_t key = (uint32_t) filter_mode | ((uint32_t) wrap_mode << 1) |
-                   ((uint32_t) (mip_filter != 0) << 3);
+                   ((uint32_t) (mip_filter != 0) << 3) |
+                   ((uint32_t) max_aniso << 4);
     for (auto &[k, sampler] : heap->samplers)
         if (k == key)
             return sampler;
@@ -260,6 +263,9 @@ static VkSampler vulkan_tex_sampler(VulkanHeap *heap, int filter_mode,
     sampler_info.addressModeU = wrap;
     sampler_info.addressModeV = wrap;
     sampler_info.addressModeW = wrap;
+    sampler_info.anisotropyEnable = max_aniso > 1;
+    sampler_info.maxAnisotropy = (float) max_aniso;
+    // The image view limits the LOD to the levels of the texture
     sampler_info.maxLod = VK_LOD_CLAMP_NONE;
 
     VkSampler sampler = VK_NULL_HANDLE;
@@ -307,7 +313,7 @@ void *jitc_vulkan_tex_create(size_t ndim, const size_t *shape,
                              size_t n_channels, int format, int filter_mode,
                              int wrap_mode, int writable, int srgb,
                              size_t n_levels, int mip_filter,
-                             size_t /* max_aniso */, int compression) {
+                             size_t max_aniso, int compression) {
     if (ndim < 1 || ndim > 3)
         jitc_raise("jit_tex_create(): invalid texture dimension!");
     else if (n_channels == 0)
@@ -315,9 +321,20 @@ void *jitc_vulkan_tex_create(size_t ndim, const size_t *shape,
     for (size_t i = 0; i < ndim; ++i)
         if (shape[i] == 0)
             jitc_raise("jit_tex_create(): texture dimensions must be nonzero!");
-    if (n_levels > 1)
-        jitc_raise("jit_tex_create(): MIP-mapped textures are not yet "
-                   "supported by the Vulkan backend.");
+    if (n_levels == 0)
+        n_levels = 1;
+    size_t max_levels = 1, max_shape = 0;
+    for (size_t i = 0; i < ndim; ++i)
+        max_shape = std::max(max_shape, shape[i]);
+    while (max_shape >> max_levels)
+        max_levels++;
+    if (n_levels > max_levels)
+        jitc_raise("jit_tex_create(): a texture of this shape has at most %zu "
+                   "MIP levels!", max_levels);
+    // Anisotropic filtering is limited to 2D textures: lavapipe crashes on
+    // anisotropic 1D and 3D images
+    if (ndim != 2)
+        max_aniso = 1;
     if (writable)
         jitc_raise("jit_tex_create(): writable textures are not yet supported "
                    "by the Vulkan backend.");
@@ -339,12 +356,13 @@ void *jitc_vulkan_tex_create(size_t ndim, const size_t *shape,
     VkDevice device = (VkDevice) dev.device;
     VulkanHeap *heap = (VulkanHeap *) dev.heap_state;
     VkSampler sampler =
-        vulkan_tex_sampler(heap, filter_mode, wrap_mode, mip_filter);
+        vulkan_tex_sampler(heap, filter_mode, wrap_mode, mip_filter, max_aniso);
 
     bool srgb_rgba = srgb && (VarType) format == VarType::UInt8;
     VulkanTexture *tex =
         new VulkanTexture(ts->device, type_size, n_channels, srgb_rgba);
     tex->ndim = ndim;
+    tex->n_levels = n_levels;
     for (size_t i = 0; i < ndim; ++i)
         tex->shape[i] = shape[i];
 
@@ -367,7 +385,7 @@ void *jitc_vulkan_tex_create(size_t ndim, const size_t *shape,
         image_info.extent = { (uint32_t) shape[0],
                               ndim >= 2 ? (uint32_t) shape[1] : 1u,
                               ndim == 3 ? (uint32_t) shape[2] : 1u };
-        image_info.mipLevels = 1;
+        image_info.mipLevels = (uint32_t) n_levels;
         image_info.arrayLayers = 1;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
         image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -391,7 +409,8 @@ void *jitc_vulkan_tex_create(size_t ndim, const size_t *shape,
         view_info.image = image;
         view_info.viewType = view_types[ndim - 1];
         view_info.format = vk_format;
-        view_info.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        view_info.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                       (uint32_t) n_levels, 0, 1 };
         VkImageView view = VK_NULL_HANDLE;
         vulkan_check(vkCreateImageView(device, &view_info, nullptr, &view));
 
@@ -496,21 +515,27 @@ static void vulkan_channel_pack(VulkanThreadState *vts, VulkanKernel kernel,
     jitc_vulkan_launch_utility(vts, kernel, &params, sizeof(params), size);
 }
 
-/// Copy between the image of sub-texture ``i`` and the device memory ``ptr``
+/// Copy between MIP level ``level`` of the image of sub-texture ``i`` and the
+/// device memory ``ptr``
 static void vulkan_tex_copy(VulkanThreadState *vts, const VulkanTexture &tex,
-                            size_t i, void *ptr, bool to_texture) {
+                            size_t i, size_t level, void *ptr,
+                            bool to_texture) {
     size_t offset = 0;
     VulkanBuffer *buf = (VulkanBuffer *) jitc_vulkan_find_buffer(ptr, &offset);
     if (!buf)
         jitc_raise("jit_tex_memcpy(): " DRJIT_PTR " is not a Vulkan "
                    "allocation!", (uintptr_t) ptr);
 
+    size_t shape[3];
+    tex.level_shape(level, shape);
+
     VkBufferImageCopy region {};
     region.bufferOffset = offset;
-    region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-    region.imageExtent = { (uint32_t) tex.shape[0],
-                           tex.ndim >= 2 ? (uint32_t) tex.shape[1] : 1u,
-                           tex.ndim == 3 ? (uint32_t) tex.shape[2] : 1u };
+    region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, (uint32_t) level,
+                                0, 1 };
+    region.imageExtent = { (uint32_t) shape[0],
+                           tex.ndim >= 2 ? (uint32_t) shape[1] : 1u,
+                           tex.ndim == 3 ? (uint32_t) shape[2] : 1u };
 
     VkCommandBuffer cb = (VkCommandBuffer) vts->ensure_cmdbuf();
     if (to_texture)
@@ -538,9 +563,10 @@ void jitc_vulkan_tex_memcpy_d2t(const void *src_ptr, void *dst_handle,
     ThreadState *ts = thread_state(JitBackend::Vulkan);
     VulkanThreadState *vts = (VulkanThreadState *) ts->actual_state();
 
-    size_t n_texels = 1, type_size = tex.type_size;
+    size_t shape[3], n_texels = 1, type_size = tex.type_size;
+    tex.level_shape(level, shape);
     for (size_t i = 0; i < tex.ndim; ++i)
-        n_texels *= tex.shape[i];
+        n_texels *= shape[i];
 
     // Interleaved channels are split into the packed, zero-padded layouts of
     // the sub-textures, unless a single image holds them as they are
@@ -550,7 +576,7 @@ void jitc_vulkan_tex_memcpy_d2t(const void *src_ptr, void *dst_handle,
 
     for (size_t i = 0; i < tex.n_textures; ++i) {
         if (!needs_staging) {
-            vulkan_tex_copy(vts, tex, i, (void *) src_ptr, true);
+            vulkan_tex_copy(vts, tex, i, level, (void *) src_ptr, true);
             continue;
         }
         size_t ci = tex.channels_image(i);
@@ -560,7 +586,7 @@ void jitc_vulkan_tex_memcpy_d2t(const void *src_ptr, void *dst_handle,
                             (uint32_t) tex.n_channels, (uint32_t) ci,
                             (uint32_t) (i * 4), (uint32_t) tex.channels(i),
                             (uint32_t) (n_texels * ci));
-        vulkan_tex_copy(vts, tex, i, packed, true);
+        vulkan_tex_copy(vts, tex, i, level, packed, true);
         jitc_free(packed);
     }
 }
@@ -580,13 +606,13 @@ void jitc_vulkan_tex_memcpy_t2d(const void *src_handle, void *dst_ptr) {
 
     for (size_t i = 0; i < tex.n_textures; ++i) {
         if (!needs_staging) {
-            vulkan_tex_copy(vts, tex, i, dst_ptr, false);
+            vulkan_tex_copy(vts, tex, i, 0, dst_ptr, false);
             continue;
         }
         size_t ci = tex.channels_image(i), c = tex.channels(i);
         void *packed = jitc_malloc(JitBackend::Vulkan,
                                    n_texels * ci * type_size);
-        vulkan_tex_copy(vts, tex, i, packed, false);
+        vulkan_tex_copy(vts, tex, i, 0, packed, false);
         vulkan_channel_pack(vts, kernel, packed, dst_ptr,
                             (uint32_t) tex.n_channels, (uint32_t) ci,
                             (uint32_t) (i * 4), (uint32_t) c,
@@ -599,13 +625,23 @@ void jitc_vulkan_tex_memcpy_t2d(const void *src_handle, void *dst_ptr) {
 //  Lookup graph builders
 // ============================================================================
 
-/// Validate the coordinates of a lookup, see ``jitc_cuda_tex_check()``
-static Variable jitc_vulkan_tex_check(size_t ndim, const uint32_t *pos) {
+/// Validate the coordinates and further float32 operands (LOD/gradients) of a
+/// lookup, see ``jitc_cuda_tex_check()``
+static Variable jitc_vulkan_tex_check(size_t ndim, const uint32_t *pos,
+                                      size_t n_extra = 0,
+                                      const uint32_t *extra = nullptr) {
+    uint32_t idx[9];
+    size_t n = 0;
+    for (size_t i = 0; i < ndim; ++i)
+        idx[n++] = pos[i];
+    for (size_t i = 0; i < n_extra; ++i)
+        idx[n++] = extra[i];
+
     uint32_t size = 0;
     bool dirty = false, symbolic = false;
 
-    for (size_t i = 0; i < ndim; ++i) {
-        const Variable *v = jitc_var(pos[i]);
+    for (size_t i = 0; i < n; ++i) {
+        const Variable *v = jitc_var(idx[i]);
         if ((VarType) v->type != VarType::Float32)
             jitc_raise("jit_tex_lookup(): type mismatch for arg. %zu (got %s, "
                        "expected %s)", i, type_name[v->type],
@@ -615,8 +651,8 @@ static Variable jitc_vulkan_tex_check(size_t ndim, const uint32_t *pos) {
         symbolic |= (bool) v->symbolic;
     }
 
-    for (size_t i = 0; i < ndim; ++i) {
-        const Variable *v = jitc_var(pos[i]);
+    for (size_t i = 0; i < n; ++i) {
+        const Variable *v = jitc_var(idx[i]);
         if (v->size != 1 && v->size != size)
             jitc_raise("jit_tex_lookup(): arithmetic involving arrays of "
                        "incompatible size!");
@@ -624,9 +660,9 @@ static Variable jitc_vulkan_tex_check(size_t ndim, const uint32_t *pos) {
 
     if (dirty) {
         jitc_eval(thread_state(JitBackend::Vulkan));
-        for (size_t i = 0; i < ndim; ++i) {
-            if (jitc_var(pos[i])->is_dirty())
-                jitc_raise_dirty_error(pos[i]);
+        for (size_t i = 0; i < n; ++i) {
+            if (jitc_var(idx[i])->is_dirty())
+                jitc_raise_dirty_error(idx[i]);
         }
     }
 
@@ -677,6 +713,122 @@ void jitc_vulkan_tex_lookup(const void *handle, const uint32_t *pos,
             v.dep[0] = tex_load;
             jitc_var_inc_ref(tex_load);
             *out++ = jitc_var_new(v);
+        }
+    }
+}
+
+/// Shared body of the LOD/gradient lookups, see ``cuda_tex_sample_op()``:
+/// emit one ``kind`` node per sub-texture, carrying the coordinates and
+/// ``n_extra`` further float32 operands in the ``TexData`` payload
+static void vulkan_tex_sample_op(VarKind kind, const void *handle,
+                                 const uint32_t *pos, size_t n_extra,
+                                 const uint32_t *extra, uint32_t active,
+                                 uint32_t *out) {
+    const VulkanTexture &tex = *((const VulkanTexture *) handle);
+    if (tex.n_levels <= 1)
+        jitc_raise("jit_tex_lookup_lod/grad(): texture was created without "
+                   "MIP levels!");
+
+    size_t ndim = tex.ndim;
+    Variable tmpl = jitc_vulkan_tex_check(ndim, pos, n_extra, extra);
+
+    const Variable *active_v = jitc_var(active);
+    bool masked = !(active_v->is_literal() && active_v->literal == 1);
+
+    for (size_t ti = 0; ti < tex.n_textures; ++ti) {
+        Ref tex_ptr = steal(tex.get_jit_pointer(ti));
+
+        TexData *td = new TexData();
+        td->ndim = (uint32_t) ndim;
+        for (size_t i = 0; i < ndim; ++i) {
+            td->indices[i] = pos[i];
+            jitc_var_inc_ref(pos[i]);
+        }
+        td->n_values = (uint32_t) n_extra;
+        for (size_t i = 0; i < n_extra; ++i) {
+            td->values[i] = extra[i];
+            jitc_var_inc_ref(extra[i]);
+        }
+
+        uint32_t node =
+            masked ? jitc_var_new_node_2(
+                         JitBackend::Vulkan, kind, VarType::Float32, tmpl.size,
+                         tmpl.symbolic, tex_ptr, jitc_var(tex_ptr), active,
+                         jitc_var(active), (uintptr_t) td)
+                   : jitc_var_new_node_1(
+                         JitBackend::Vulkan, kind, VarType::Float32, tmpl.size,
+                         tmpl.symbolic, tex_ptr, jitc_var(tex_ptr),
+                         (uintptr_t) td);
+
+        jitc_var_set_callback(
+            node,
+            [](uint32_t, int free, void *ptr) {
+                if (free)
+                    delete (TexData *) ptr;
+            },
+            td, true);
+
+        Ref tex_load = steal(node);
+        for (size_t ch = 0; ch < tex.channels(ti); ++ch)
+            *out++ = jitc_var_new_node_1(
+                JitBackend::Vulkan, VarKind::Extract, VarType::Float32,
+                tmpl.size, tmpl.symbolic, tex_load, jitc_var(tex_load),
+                (uint64_t) ch);
+    }
+}
+
+void jitc_vulkan_tex_lookup_lod(const void *handle, const uint32_t *pos,
+                                uint32_t lod, uint32_t active, uint32_t *out) {
+    vulkan_tex_sample_op(VarKind::TexLookupLod, handle, pos, 1, &lod, active,
+                         out);
+}
+
+void jitc_vulkan_tex_lookup_grad(const void *handle, const uint32_t *pos,
+                                 const uint32_t *ddx, const uint32_t *ddy,
+                                 uint32_t active, uint32_t *out) {
+    size_t ndim = ((const VulkanTexture *) handle)->ndim;
+    uint32_t extra[6];
+    for (size_t i = 0; i < ndim; ++i) {
+        extra[i] = ddx[i];
+        extra[ndim + i] = ddy[i];
+    }
+    vulkan_tex_sample_op(VarKind::TexLookupGrad, handle, pos, 2 * ndim, extra,
+                         active, out);
+}
+
+/// Emit a ``TexFetchBilerp`` node per sub-texture and channel with the layout
+/// of the CUDA backend: dep[0] is the slot, dep[1] the mask, followed by the
+/// coordinates. The literal selects the gathered channel.
+void jitc_vulkan_tex_bilerp_fetch(const void *handle, const uint32_t *pos,
+                                  uint32_t active, uint32_t *out) {
+    const VulkanTexture &tex = *((const VulkanTexture *) handle);
+    if (tex.ndim != 2)
+        jitc_raise("jit_tex_bilerp_fetch(): only 2D textures are supported!");
+    size_t ndim = tex.ndim;
+    Variable v = jitc_vulkan_tex_check(ndim, pos);
+
+    for (size_t ti = 0; ti < tex.n_textures; ++ti) {
+        for (size_t ch = 0; ch < tex.channels(ti); ++ch) {
+            v.kind = (uint32_t) VarKind::TexFetchBilerp;
+            v.literal = ch;
+            memset(v.dep, 0, sizeof(v.dep));
+            v.dep[0] = tex.get_jit_pointer(ti);
+            v.dep[1] = active;
+            jitc_var_inc_ref(active);
+            for (size_t j = 0; j < ndim; ++j) {
+                v.dep[j + 2] = pos[j];
+                jitc_var_inc_ref(pos[j]);
+            }
+            Ref tex_load = steal(jitc_var_new(v));
+
+            memset(v.dep, 0, sizeof(v.dep));
+            v.kind = (uint32_t) VarKind::Extract;
+            for (uint32_t j = 0; j < 4; ++j) {
+                v.literal = (uint64_t) j;
+                v.dep[0] = tex_load;
+                jitc_var_inc_ref(tex_load);
+                *out++ = jitc_var_new(v);
+            }
         }
     }
 }
