@@ -22,6 +22,8 @@
 static void *jitc_vulkan_handle = nullptr;
 static void *jitc_spirv_tools_handle = nullptr;
 
+static void jitc_vulkan_api_unload_spirv_tools();
+
 bool jitc_vulkan_api_init() {
     if (jitc_vulkan_handle)
         return true;
@@ -42,19 +44,6 @@ bool jitc_vulkan_api_init() {
         jitc_find_library(vulkan_fname, vulkan_glob, "DRJIT_LIBVULKAN_PATH");
     if (!jitc_vulkan_handle) // Vulkan loader cannot be found, give up
         return false;
-
-    // The Vulkan backend assembles kernels using SPIRV-Tools
-    jitc_spirv_tools_handle = jitc_find_library(spirv_fname, spirv_glob,
-                                                "DRJIT_LIBSPIRV_TOOLS_PATH");
-    if (!jitc_spirv_tools_handle) {
-        jitc_vulkan_api_shutdown();
-        jitc_log(LogLevel::Warn,
-                 "jit_vulkan_api_init(): could not find the SPIRV-Tools "
-                 "library (\"%s\") -- disabling Vulkan backend! Set the "
-                 "DRJIT_LIBSPIRV_TOOLS_PATH environment variable to specify "
-                 "its path.", spirv_fname);
-        return false;
-    }
 
     vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)
         dlsym(jitc_vulkan_handle, "vkGetInstanceProcAddr");
@@ -78,22 +67,6 @@ bool jitc_vulkan_api_init() {
         LOAD(vkCreateInstance);
 
         #undef LOAD
-
-        #define LOAD(name)                                                   \
-            symbol = #name;                                                  \
-            name = decltype(name)(dlsym(jitc_spirv_tools_handle, #name));    \
-            if (!name)                                                       \
-                break;                                                       \
-            symbol = nullptr
-
-        LOAD(spvContextCreate);
-        LOAD(spvContextDestroy);
-        LOAD(spvTextToBinary);
-        LOAD(spvBinaryDestroy);
-        LOAD(spvDiagnosticDestroy);
-        LOAD(spvValidateBinary);
-
-        #undef LOAD
     } while (false);
 
     if (symbol) {
@@ -104,7 +77,51 @@ bool jitc_vulkan_api_init() {
         return false;
     }
 
+    // SPIRV-Tools is optional, it validates kernels in debug mode
+    jitc_spirv_tools_handle = jitc_find_library(spirv_fname, spirv_glob,
+                                                "DRJIT_LIBSPIRV_TOOLS_PATH");
+    if (jitc_spirv_tools_handle) {
+        do {
+            #define LOAD(name)                                               \
+                symbol = #name;                                              \
+                name = decltype(name)(dlsym(jitc_spirv_tools_handle, #name));\
+                if (!name)                                                   \
+                    break;                                                   \
+                symbol = nullptr
+
+            LOAD(spvContextCreate);
+            LOAD(spvContextDestroy);
+            LOAD(spvDiagnosticDestroy);
+            LOAD(spvValidateBinary);
+
+            #undef LOAD
+        } while (false);
+
+        if (symbol) {
+            jitc_log(LogLevel::Warn,
+                     "jit_vulkan_api_init(): could not find symbol \"%s\" "
+                     "of SPIRV-Tools -- kernels will not be validated.",
+                     symbol);
+            jitc_vulkan_api_unload_spirv_tools();
+        }
+    }
+
     return true;
+}
+
+static void jitc_vulkan_api_unload_spirv_tools() {
+    if (!jitc_spirv_tools_handle)
+        return;
+    spvContextCreate = nullptr;
+    spvContextDestroy = nullptr;
+    spvDiagnosticDestroy = nullptr;
+    spvValidateBinary = nullptr;
+#if !defined(_WIN32)
+    dlclose(jitc_spirv_tools_handle);
+#else
+    FreeLibrary((HMODULE) jitc_spirv_tools_handle);
+#endif
+    jitc_spirv_tools_handle = nullptr;
 }
 
 bool jitc_vulkan_api_init_instance(VkInstance instance) {
@@ -221,23 +238,18 @@ void jitc_vulkan_api_shutdown() {
     Z(vkCreatePipelineLayout); Z(vkDestroyPipelineLayout);
     Z(vkCreatePipelineCache); Z(vkDestroyPipelineCache);
     Z(vkGetPipelineCacheData); Z(vkCreateComputePipelines);
-    Z(vkDestroyPipeline); Z(spvContextCreate); Z(spvContextDestroy);
-    Z(spvTextToBinary); Z(spvBinaryDestroy); Z(spvDiagnosticDestroy);
-    Z(spvValidateBinary);
+    Z(vkDestroyPipeline);
     #undef Z
+
+    jitc_vulkan_api_unload_spirv_tools();
 
 #if !defined(_WIN32)
     dlclose(jitc_vulkan_handle);
-    if (jitc_spirv_tools_handle)
-        dlclose(jitc_spirv_tools_handle);
 #else
     FreeLibrary((HMODULE) jitc_vulkan_handle);
-    if (jitc_spirv_tools_handle)
-        FreeLibrary((HMODULE) jitc_spirv_tools_handle);
 #endif
 
     jitc_vulkan_handle = nullptr;
-    jitc_spirv_tools_handle = nullptr;
 }
 
 void vulkan_check_impl(VkResult errval, const char *file, const int line) {

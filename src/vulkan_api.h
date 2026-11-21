@@ -12,8 +12,8 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan_core.h>
 
-/// Try to load the Vulkan loader and SPIRV-Tools, and resolve their global API
-/// functions
+/// Try to load the Vulkan loader and resolve its global API functions. Also load
+/// SPIRV-Tools if available, which validates kernels in debug mode
 extern bool jitc_vulkan_api_init();
 
 /// Resolve the API functions that are dispatched through ``instance``
@@ -30,12 +30,6 @@ extern void vulkan_check_impl(VkResult errval, const char *file, const int line)
 using spv_context = struct spv_context_t *;
 using spv_const_context = const struct spv_context_t *;
 using spv_result_t = int;
-
-struct spv_binary_t {
-    uint32_t *code;
-    size_t wordCount;
-};
-using spv_binary = spv_binary_t *;
 
 struct spv_position_t {
     size_t line;
@@ -59,10 +53,6 @@ using spv_diagnostic = spv_diagnostic_t *;
 
 DR_VULKAN_SYM(spv_context (*spvContextCreate)(int));
 DR_VULKAN_SYM(void (*spvContextDestroy)(spv_context));
-DR_VULKAN_SYM(spv_result_t (*spvTextToBinary)(spv_const_context, const char *,
-                                              size_t, spv_binary *,
-                                              spv_diagnostic *));
-DR_VULKAN_SYM(void (*spvBinaryDestroy)(spv_binary));
 DR_VULKAN_SYM(void (*spvDiagnosticDestroy)(spv_diagnostic));
 DR_VULKAN_SYM(spv_result_t (*spvValidateBinary)(spv_const_context,
                                                 const uint32_t *, size_t,

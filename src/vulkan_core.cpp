@@ -11,6 +11,7 @@
 
 #include "vulkan.h"
 #include "vulkan_api.h"
+#include "vulkan_asm.h"
 #include "vulkan_ts.h"
 #include "vulkan_tex.h"
 #include "buffer_map.h"
@@ -509,22 +510,14 @@ bool jitc_vulkan_kernel_compile(ThreadState *ts, Kernel &kernel) {
             module_from_disk = jitc_cache_blob_load(CacheKind::VulkanModule,
                                                     key, spirv);
             if (!module_from_disk) {
-                spv_binary binary = nullptr;
-                spv_diagnostic diagnostic = nullptr;
-                if (spvTextToBinary(jitc_vulkan_spirv_context, job.source,
-                                    job.source_size, &binary,
-                                    &diagnostic) != SPV_SUCCESS)
+                std::string error;
+                size_t line = 0;
+                if (!vulkan_asm(job.source, job.source_size, spirv, error,
+                                line))
                     jitc_fail("jitc_vulkan_kernel_compile(): assembly of "
                               "\"%s\" failed in line %zu: %s\n\n--- Source "
-                              "code ---\n%s", job.symbol,
-                              diagnostic ? diagnostic->position.line + 1 : 0,
-                              diagnostic ? diagnostic->error : "<unknown>",
-                              job.source);
-
-                const uint8_t *code = (const uint8_t *) binary->code;
-                spirv.assign(code, code + binary->wordCount * sizeof(uint32_t));
-                spvBinaryDestroy(binary);
-                spvDiagnosticDestroy(diagnostic);
+                              "code ---\n%s", job.symbol, line + 1,
+                              error.c_str(), job.source);
 
                 if (jitc_cache_writable())
                     jitc_cache_blob_store_async(CacheKind::VulkanModule,
@@ -533,8 +526,8 @@ bool jitc_vulkan_kernel_compile(ThreadState *ts, Kernel &kernel) {
             }
 
             // Drivers may crash on invalid modules, hence validate them in
-            // debug mode
-            if (jit_flag(JitFlag::Debug)) {
+            // debug mode (if SPIRV-Tools is available)
+            if (jit_flag(JitFlag::Debug) && jitc_vulkan_spirv_context) {
                 spv_diagnostic diagnostic = nullptr;
                 if (spvValidateBinary(jitc_vulkan_spirv_context,
                                       (const uint32_t *) spirv.data(),
@@ -742,7 +735,11 @@ bool jitc_vulkan_init() {
         return false;
     }
 
-    jitc_vulkan_spirv_context = spvContextCreate(SPV_ENV_VULKAN_1_2);
+    if (spvContextCreate)
+        jitc_vulkan_spirv_context = spvContextCreate(SPV_ENV_VULKAN_1_2);
+    else
+        jitc_log(LogLevel::Info, "jit_vulkan_init(): SPIRV-Tools not found, "
+                 "kernels will not be validated in debug mode.");
 
     uint32_t device_count = 0;
     vulkan_check(vkEnumeratePhysicalDevices(jitc_vulkan_instance,

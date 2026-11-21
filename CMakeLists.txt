@@ -202,6 +202,8 @@ if (DRJIT_ENABLE_VULKAN)
   set(DRJIT_VULKAN_FILES
     src/vulkan_api.h
     src/vulkan_api.cpp
+    src/vulkan_asm.h
+    src/vulkan_asm.cpp
     src/vulkan.h
     src/vulkan_core.cpp
     src/vulkan_ts.h

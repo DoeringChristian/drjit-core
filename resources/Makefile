@@ -62,5 +62,11 @@ vulkan_kernels.spv: vulkan_kernels.comp
 vulkan_kernels.lz4: pack vulkan_kernels.spv
 	./pack vulkan
 
+# Instruction and operand tables of the SPIR-V assembler (src/vulkan_asm.cpp),
+# generated from a checkout of https://github.com/KhronosGroup/SPIRV-Headers:
+#   make spirv SPIRV_HEADERS=<path>
+spirv:
+	python3 spirv_grammar.py $(SPIRV_HEADERS)
+
 clean:
 	rm -f kernels_75.ptx kernels.bin metal_kernels.air metal_kernels.metallib vulkan_kernels.spv
